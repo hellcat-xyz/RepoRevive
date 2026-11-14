@@ -1,0 +1,12 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Require confirmation before pushing",
+      "description": "Asks the user before any shell command that pushes to a remote or opens PRs (product rule: never push without explicit authorization).",
+      "trigger": "PreToolUse",
+      "matcher": "(shell|pwsh|bash|execute)",
+      "action": { "type": "command", "command": "node scripts/kiro-hook.mjs guard-push", "timeout": 15 }
+    }
+  ]
+}

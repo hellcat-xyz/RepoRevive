@@ -1,0 +1,17 @@
+npm warn deprecated request@2.88.2: request has been deprecated, see https://github.com/request/request/issues/3142
+npm warn deprecated node-sass@4.14.1: Node Sass is no longer supported. Please use `sass` or `sass-embedded` instead.
+npm error code 1
+npm error path /workspace/node_modules/node-sass
+npm error command failed
+npm error command sh -c node scripts/build.js
+npm error Building: /usr/local/bin/node /workspace/node_modules/node-gyp/bin/node-gyp.js rebuild --verbose --libsass_ext= --libsass_cflags= --libsass_ldflags= --libsass_library=
+npm error gyp info it worked if it ends with ok
+npm error gyp ERR! configure error
+npm error gyp ERR! stack Error: Command failed: /usr/bin/python3 -c import sys; print "%s.%s.%s" % sys.version_info[:3];
+npm error gyp ERR! stack   File "<string>", line 1
+npm error gyp ERR! System Linux 6.6.32-linuxkit
+npm error gyp ERR! command "/usr/local/bin/node" "/workspace/node_modules/node-gyp/bin/node-gyp.js" "rebuild"
+npm error gyp ERR! cwd /workspace/node_modules/node-sass
+npm error gyp ERR! node -v v22.11.0
+npm error Build failed with error code: 1
+npm error A complete log of this run can be found in: /tmp/.npm/_logs/2024-11-20T10_00_00_000Z-debug-0.log

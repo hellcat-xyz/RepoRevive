@@ -1,0 +1,13 @@
+> lib@2.3.0 test
+> mocha test/
+
+/workspace/test/index.js:3
+const chai = require('chai');
+Error: Cannot find module 'chai'
+Require stack:
+- /workspace/test/index.js
+    at Module._resolveFilename (node:internal/modules/cjs/loader:1225:15)
+    at Module._load (node:internal/modules/cjs/loader:1051:27)
+Error: Cannot find module './local-helper'
+Error: Cannot find module 'fs'
+sh: 1: istanbul: not found

@@ -1,0 +1,12 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Lint TypeScript on save",
+      "description": "Runs ESLint (with --fix) on saved TypeScript files.",
+      "trigger": "PostFileSave",
+      "matcher": "\\.(ts|tsx)$",
+      "action": { "type": "command", "command": "node scripts/kiro-hook.mjs lint", "timeout": 90 }
+    }
+  ]
+}

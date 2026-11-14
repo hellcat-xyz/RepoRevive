@@ -1,0 +1,11 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Typecheck when the agent finishes a turn",
+      "description": "Runs `tsc --noEmit` so type errors surface before work is reported as done.",
+      "trigger": "Stop",
+      "action": { "type": "command", "command": "npm run typecheck --silent", "timeout": 180 }
+    }
+  ]
+}

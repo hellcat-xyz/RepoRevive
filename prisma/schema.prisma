@@ -1,0 +1,111 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum JobStatus {
+  QUEUED
+  CLONING
+  ANALYZING
+  BASELINE
+  DIAGNOSING
+  REPAIRING
+  VERIFYING
+  REPORTING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum Health {
+  DEAD
+  DIAGNOSING
+  REPAIRING
+  PARTIALLY_REVIVED
+  REVIVED
+  UNRECOVERABLE
+}
+
+enum AttemptStatus {
+  VERIFIED
+  VERIFIED_STATIC
+  REVERTED
+  SUGGESTED
+  ERROR
+}
+
+model Resurrection {
+  id           String    @id @default(cuid())
+  repoUrl      String
+  owner        String
+  name         String
+  status       JobStatus @default(QUEUED)
+  health       Health    @default(DEAD)
+  heartbeat    Int       @default(0)
+  currentStage String?
+  commitSha    String?
+  commitDate   DateTime?
+  runtime      String?
+  analysis     Json?
+  baseline     Json?
+  final        Json?
+  report       Json?
+  patch        String?
+  errorCode    String?
+  errorMessage String?
+  lockedBy     String?
+  lockedAt     DateTime?
+  clientIp     String?
+  cancelRequested Boolean @default(false)
+  createdAt    DateTime  @default(now())
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  updatedAt    DateTime  @updatedAt
+
+  attempts RepairAttempt[]
+  events   JobEvent[]
+
+  @@index([status, createdAt])
+  @@index([createdAt])
+}
+
+model RepairAttempt {
+  id             String        @id @default(cuid())
+  resurrectionId String
+  seq            Int
+  issueKind      String
+  fingerprint    String
+  strategyId     String
+  title          String
+  rationale      String
+  status         AttemptStatus
+  reason         String?
+  files          String[]
+  diff           String?
+  verification   Json?
+  durationMs     Int           @default(0)
+  createdAt      DateTime      @default(now())
+
+  resurrection Resurrection @relation(fields: [resurrectionId], references: [id], onDelete: Cascade)
+
+  @@unique([resurrectionId, seq])
+}
+
+model JobEvent {
+  id             BigInt   @id @default(autoincrement())
+  resurrectionId String
+  seq            Int
+  type           String
+  level          String   @default("info")
+  message        String
+  data           Json?
+  ts             DateTime @default(now())
+
+  resurrection Resurrection @relation(fields: [resurrectionId], references: [id], onDelete: Cascade)
+
+  @@unique([resurrectionId, seq])
+}

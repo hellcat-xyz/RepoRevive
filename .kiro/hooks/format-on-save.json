@@ -1,0 +1,18 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Format changed files with Prettier",
+      "description": "Runs Prettier on source, style, and doc files after they are saved or created.",
+      "trigger": "PostFileSave",
+      "matcher": "\\.(ts|tsx|mjs|css|md|json)$",
+      "action": { "type": "command", "command": "node scripts/kiro-hook.mjs format", "timeout": 60 }
+    },
+    {
+      "name": "Format new files with Prettier",
+      "trigger": "PostFileCreate",
+      "matcher": "\\.(ts|tsx|mjs|css|md|json)$",
+      "action": { "type": "command", "command": "node scripts/kiro-hook.mjs format", "timeout": 60 }
+    }
+  ]
+}

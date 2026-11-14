@@ -1,0 +1,12 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Run related tests for engine, sandbox, and server changes",
+      "description": "Runs `vitest related` for saved files in the repair engine, sandbox, server, or tests.",
+      "trigger": "PostFileSave",
+      "matcher": "(src[\\\\/](engine|sandbox|server|lib)|tests)[\\\\/].*\\.ts$",
+      "action": { "type": "command", "command": "node scripts/kiro-hook.mjs test", "timeout": 180 }
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+> my-site@1.0.0 build
+> webpack --mode production
+
+node:internal/crypto/hash:79
+  this[kHandle] = new _Hash(algorithm, xofLen, algorithmId, getHashCache());
+                  ^
+
+Error: error:0308010C:digital envelope routines::unsupported
+    at new Hash (node:internal/crypto/hash:79:19)
+    at Object.createHash (node:crypto:139:10)
+    at module.exports (/workspace/node_modules/webpack/lib/util/createHash.js:135:53)
+    at NormalModule._initBuildHash (/workspace/node_modules/webpack/lib/NormalModule.js:417:16) {
+  opensslErrorStack: [ 'error:03000086:digital envelope routines::initialization error' ],
+  library: 'digital envelope routines',
+  reason: 'unsupported',
+  code: 'ERR_OSSL_EVP_UNSUPPORTED'
+}
+
+Node.js v22.11.0
