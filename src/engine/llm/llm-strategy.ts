@@ -74,7 +74,18 @@ export async function materializeEdits(
 
 export const llmSourceFix: FixStrategy = {
   id: 'llm-source-fix',
-  handles: ['unknown', 'missing-module', 'modern-syntax', 'types-incompatible'],
+  handles: [
+    'unknown',
+    'missing-module',
+    'modern-syntax',
+    'types-incompatible',
+    'lifecycle-script-failure',
+    'broken-upstream-resource',
+    'missing-file',
+    'typescript-error',
+    'dependency-api-change',
+    'build-failure',
+  ],
   invasiveness: 5,
   async propose(issue: Issue, ctx) {
     if (!ctx.llm || issue.step === 'static') return [];
@@ -83,7 +94,11 @@ export const llmSourceFix: FixStrategy = {
     const files: { path: string; content: string }[] = [];
     const pkg = await ctx.ws.current('package.json');
     if (pkg) files.push({ path: 'package.json', content: pkg.slice(0, MAX_FILE_BYTES) });
-    for (const p of referencedFiles(log)) {
+    const hinted = [issue.diagnostic?.file].filter(
+      (p): p is string => typeof p === 'string' && isAllowedLlmPath(p),
+    );
+    for (const p of [...hinted, ...referencedFiles(log)]) {
+      if (files.some((f) => f.path === p)) continue;
       const content = await ctx.ws.current(p).catch(() => null);
       if (content && content.length <= MAX_FILE_BYTES) files.push({ path: p, content });
     }

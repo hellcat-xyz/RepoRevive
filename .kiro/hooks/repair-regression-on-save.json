@@ -1,0 +1,16 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Run repair regression and invariant tests",
+      "trigger": "PostFileSave",
+      "description": "Re-runs the OrexisAI regression, repair invariant property tests, and structured diagnosis tests when repair-engine files are saved.",
+      "matcher": "src[\\\\/]engine[\\\\/](pipeline|verifier|ecosystems[\\\\/]npm[\\\\/](diagnose|lifecycle|strategies|upstream-strategies)|llm[\\\\/]llm-strategy|core[\\\\/](workspace|verification))\\.ts$",
+      "action": {
+        "type": "command",
+        "command": "npx vitest run tests/pipeline/orexis-regression.test.ts tests/property/repair-invariants.test.ts tests/unit/diagnose-structured.test.ts",
+        "timeout": 180
+      }
+    }
+  ]
+}

@@ -5,6 +5,7 @@ import { promises as fs } from 'node:fs';
 import { HttpNpmRegistry } from '@/engine/ecosystems/npm/registry-http';
 import { OpenAiCompatibleClient } from '@/engine/llm/openai-client';
 import { ResurrectionPipeline } from '@/engine/pipeline';
+import { GitHubUpstreamResolver } from '@/engine/upstream/github-http';
 import { parseGitHubUrl } from '@/lib/github';
 import { DockerSandbox } from '@/sandbox/docker-sandbox';
 import { config } from '@/server/config';
@@ -22,6 +23,7 @@ const running = new Map<string, Promise<void>>();
 let stopping = false;
 
 const registry = new HttpNpmRegistry();
+const upstream = new GitHubUpstreamResolver({ token: cfg.githubToken });
 const llm = cfg.llm ? new OpenAiCompatibleClient(cfg.llm) : null;
 
 async function runJob(jobId: string): Promise<void> {
@@ -50,6 +52,7 @@ async function runJob(jobId: string): Promise<void> {
     {
       sandbox,
       registry,
+      upstream,
       llm,
       sink,
       reporter,

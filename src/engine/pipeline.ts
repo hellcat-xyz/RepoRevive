@@ -4,7 +4,7 @@ import type { RepoRef } from '@/lib/github';
 import { analyzeWorkflow, isValidYaml } from './ci/github-actions';
 import { ResurrectionError, toResurrectionError } from './core/errors';
 import { createGitPatch } from './core/patch';
-import type { Clock, EventSink, LlmClient, PackageRegistry, Sandbox } from './core/ports';
+import type { Clock, EventSink, LlmClient, PackageRegistry, Sandbox, UpstreamResolver } from './core/ports';
 import { systemClock } from './core/ports';
 import { healthForStatus, JobStateMachine } from './core/state';
 import type {
@@ -63,6 +63,8 @@ export interface PipelineDeps {
   sandbox: Sandbox;
   registry: PackageRegistry;
   llm: LlmClient | null;
+  /** Optional read-only GitHub lookups used by strategies that repair broken upstream downloads. */
+  upstream?: UpstreamResolver | null;
   sink: EventSink;
   reporter: JobReporter;
   clock?: Clock;
@@ -256,6 +258,7 @@ export class ResurrectionPipeline {
     const tried = new Set<string>();
     const strategies = this.strategiesFor(eco);
     const suggested = new Set<string>();
+    const explained = new Set<string>();
     let runtimeAttempts = 0;
 
     while (runtimeAttempts < this.config.maxAttempts) {
@@ -270,9 +273,10 @@ export class ResurrectionPipeline {
         runtime,
         commitDate,
         registry: this.deps.registry,
+        upstream: this.deps.upstream ?? null,
         llm: this.deps.llm,
         current: state,
-        log: (m) => this.log(m, 'info', 'strategy'),
+        log: (m) => this.log(m, 'info', 'repair'),
         sandbox: {
           regenerateLockfile: (edits) => this.regenerateLockfile(ws, eco, edits, runtime.image, cacheDir),
         },
@@ -287,12 +291,24 @@ export class ResurrectionPipeline {
           }
           continue;
         }
-        for (const strategy of strategies.filter((s) => s.handles.includes(issue.kind))) {
+        const handlers = strategies.filter((s) => s.handles.includes(issue.kind));
+        const considered: string[] = [];
+        if (handlers.length === 0 && !explained.has(issue.fingerprint)) {
+          explained.add(issue.fingerprint);
+          this.log(`No automatic strategy handles "${issue.kind}" (${issue.title}).`, 'warn', 'repair');
+        }
+        for (const strategy of handlers) {
           let proposals: FixProposal[] = [];
           try {
             proposals = await strategy.propose(issue, ctx);
           } catch (err) {
+            this.log(
+              `Strategy ${strategy.id} failed: ${err instanceof Error ? err.message : String(err)}`,
+              'warn',
+              'repair',
+            );
             const key = `${issue.fingerprint}::${strategy.id}::error`;
+            considered.push(`${strategy.id}: error`);
             if (!tried.has(key)) {
               tried.add(key);
               await this.recordAttempt({
@@ -309,13 +325,27 @@ export class ResurrectionPipeline {
             }
             continue;
           }
-          for (const proposal of proposals) {
-            const key = `${issue.fingerprint}::${strategy.id}::${proposal.title}`;
-            if (tried.has(key) || proposal.edits.length === 0) continue;
-            tried.add(key);
+          const fresh = proposals.filter(
+            (p) => p.edits.length > 0 && !tried.has(`${issue.fingerprint}::${strategy.id}::${p.title}`),
+          );
+          considered.push(
+            `${strategy.id}: ${fresh.length ? `${fresh.length} candidate(s)` : 'nothing to try'}`,
+          );
+          const proposal = fresh[0];
+          if (proposal) {
+            tried.add(`${issue.fingerprint}::${strategy.id}::${proposal.title}`);
+            this.log(`Investigating: ${issue.title}. Consulted ${considered.join('; ')}.`, 'info', 'repair');
             pick = { issue, proposal };
             break outer;
           }
+        }
+        if (handlers.length > 0 && !explained.has(issue.fingerprint)) {
+          explained.add(issue.fingerprint);
+          this.log(
+            `No safe fix found for "${issue.title}". Consulted ${considered.join('; ')}.`,
+            'warn',
+            'repair',
+          );
         }
       }
       if (!pick) break;
@@ -369,9 +399,23 @@ export class ResurrectionPipeline {
     const diff = createGitPatch(
       beforeContents.map((b, i) => ({ path: b.path, before: b.before, after: proposal.edits[i]!.content })),
     );
+    this.log(
+      `Candidate patch applied in the sandbox workspace: ${proposal.edits.map((e) => e.path).join(', ')}`,
+      'info',
+      'patch',
+    );
     await this.setStatus('VERIFYING', `Verifying: ${proposal.title}`);
+    this.log('Re-running install, build, and test with the candidate applied.', 'info', 'verify');
 
-    const next = await verifier.verify();
+    let next: Awaited<ReturnType<Verifier['verify']>>;
+    try {
+      next = await verifier.verify();
+    } catch (err) {
+      // Never leave an unverified candidate in the workspace (and therefore in the patch).
+      await ws.rollback(snapshot);
+      this.log(`Verification aborted; candidate rolled back: ${proposal.title}`, 'warn', 'verify');
+      throw err;
+    }
     const decision = decideAcceptance(prev, next, issue.fingerprint);
     const base = {
       issueKind: issue.kind,
@@ -557,6 +601,18 @@ export class ResurrectionPipeline {
       for (const issue of baseline.issues) {
         this.deps.sink.emit({ type: 'issue', issue, message: issue.title });
         this.log(`Found: ${issue.title}`, issue.severity === 'warning' ? 'warn' : 'error', 'diagnose');
+        const d = issue.diagnostic;
+        if (d) {
+          const parts = [
+            `category=${d.category}`,
+            d.file && `file=${d.file}`,
+            d.lifecycle && `lifecycle=${d.lifecycle}`,
+            d.command && `command=${d.command}`,
+            d.httpStatus && `http=${d.httpStatus}`,
+            d.resources?.length && `resources=${d.resources.join(',')}`,
+          ].filter(Boolean);
+          this.log(`  ${parts.join(' ')}`, 'info', 'diagnose');
+        }
       }
       if (baseline.issues.length === 0) this.log('No runtime failures found.', 'success', 'diagnose');
 
@@ -565,6 +621,12 @@ export class ResurrectionPipeline {
         await this.setStatus('REPAIRING', 'Attempting resurrection');
         await this.stage('repair', 'Applying fixes one at a time, verifying each');
         state = await this.repairLoop(ws, eco, verifier, baseline, commit.date, cacheDir);
+        const count = (s: string) => this.attempts.filter((a) => a.status === s).length;
+        this.log(
+          `Repair stage finished: ${count('VERIFIED')} verified, ${count('REVERTED')} reverted, ${count('ERROR')} errored, ${count('SUGGESTED')} suggested (unverified).`,
+          'info',
+          'repair',
+        );
       }
 
       await this.checkCancelled();
@@ -612,6 +674,12 @@ export class ResurrectionPipeline {
       now: new Date(this.clock.now()),
       error: error ? { code: error.code, message: error.message } : undefined,
     });
+
+    this.log(
+      `Resurrection report generated: health ${health}, ${changes.length} file(s) in the verified patch.`,
+      health === 'REVIVED' ? 'success' : 'info',
+      'report',
+    );
 
     let status: PipelineOutcome['status'];
     if (cancelled) {

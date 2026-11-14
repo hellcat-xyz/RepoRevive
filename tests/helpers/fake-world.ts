@@ -8,6 +8,7 @@ import type {
   RunResult,
   RunSpec,
   Sandbox,
+  UpstreamResolver,
 } from '@/engine/core/ports';
 import type { AttemptRecord } from '@/engine/core/types';
 import type { JobReporter, JobUpdate } from '@/engine/pipeline';
@@ -155,4 +156,21 @@ export async function readTree(
 export function fakeClock() {
   let t = Date.parse('2025-01-01T00:00:00Z');
   return { now: () => (t += 1000) };
+}
+
+/** Scripted GitHub upstream: `commits` maps `owner/repo@ref` to a SHA, `files` holds `owner/repo@sha:path`. */
+export class FakeUpstream implements UpstreamResolver {
+  readonly calls: string[] = [];
+  constructor(
+    private readonly commits: Record<string, string>,
+    private readonly files: Set<string>,
+  ) {}
+  async commitAt(owner: string, repo: string, ref: string, untilIso: string): Promise<string | null> {
+    this.calls.push(`commitAt ${owner}/${repo}@${ref} <= ${untilIso}`);
+    return this.commits[`${owner}/${repo}@${ref}`] ?? null;
+  }
+  async fileExists(owner: string, repo: string, sha: string, path: string): Promise<boolean> {
+    this.calls.push(`fileExists ${owner}/${repo}@${sha}:${path}`);
+    return this.files.has(`${owner}/${repo}@${sha}:${path}`);
+  }
 }

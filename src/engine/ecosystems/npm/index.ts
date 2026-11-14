@@ -64,6 +64,8 @@ export const npmEcosystem: Ecosystem = {
       result,
       declaredDeps: declared,
       runtimeMajor: ctx.runtime.major,
+      projectName: typeof m?.json.name === 'string' ? m.json.name : null,
+      scripts: m ? scriptsOf(m.json) : {},
     });
   },
 

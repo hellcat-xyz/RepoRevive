@@ -65,6 +65,19 @@ export interface LlmClient {
   proposeEdits(req: LlmFixRequest): Promise<unknown>;
 }
 
+// ---------- Upstream (GitHub) resolver ----------
+
+/**
+ * Read-only view of upstream GitHub projects that a repository's scripts download from.
+ * Implementations may only perform metadata/file-existence GETs; they never execute anything.
+ */
+export interface UpstreamResolver {
+  /** SHA of the newest commit on `ref` at or before `untilIso`, or null if none/not found. */
+  commitAt(owner: string, repo: string, ref: string, untilIso: string): Promise<string | null>;
+  /** Whether `path` exists in `owner/repo` at commit `sha`. */
+  fileExists(owner: string, repo: string, sha: string, path: string): Promise<boolean>;
+}
+
 // ---------- Events ----------
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'success';

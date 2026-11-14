@@ -47,9 +47,33 @@ export type IssueKind =
   | 'timeout'
   | 'network'
   | 'outdated-ci'
+  | 'lifecycle-script-failure'
+  | 'broken-upstream-resource'
+  | 'missing-file'
+  | 'missing-script'
+  | 'lockfile-corrupt'
+  | 'typescript-error'
+  | 'dependency-api-change'
+  | 'build-failure'
+  | 'test-failure'
   | 'unknown';
 
 export type Severity = 'critical' | 'error' | 'warning' | 'info';
+
+/** Structured, machine-readable description of a failure. */
+export interface IssueDiagnostic {
+  category: string;
+  message: string;
+  command?: string;
+  /** Repository-relative file most likely responsible (e.g. the failing script). */
+  file?: string;
+  /** npm lifecycle hook that failed, e.g. postinstall. */
+  lifecycle?: string;
+  /** Package that owns the failing script; differs from the project for dependency scripts. */
+  package?: string;
+  httpStatus?: number;
+  resources?: string[];
+}
 
 export interface Issue {
   kind: IssueKind;
@@ -62,6 +86,8 @@ export interface Issue {
   evidence: string;
   /** Structured details for strategies (package name, required node range, file path...). */
   data?: Record<string, string>;
+  /** Structured diagnosis (command, file, lifecycle hook, HTTP status) when the diagnoser could extract it. */
+  diagnostic?: IssueDiagnostic;
 }
 
 /** `content: null` deletes the file. Paths are POSIX-style, relative to the repository root. */

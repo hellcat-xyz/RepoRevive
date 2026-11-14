@@ -56,7 +56,7 @@ describe('npm diagnosis', () => {
 
   it('does not report declared packages as missing', () => {
     expect(diag('test', "Error: Cannot find module 'chai'", ['chai']).map((i) => i.kind)).toEqual([
-      'unknown',
+      'test-failure',
     ]);
   });
 
@@ -113,10 +113,10 @@ describe('npm diagnosis', () => {
     expect(issues[0]!.kind).toBe('timeout');
   });
 
-  it('gives unknown failures a stable fingerprint', () => {
+  it('gives unclassified build failures a stable fingerprint', () => {
     const a = diag('build', 'Error: boom at line 12');
     const b = diag('build', 'Error: boom at line 99');
-    expect(a[0]!.kind).toBe('unknown');
+    expect(a[0]!.kind).toBe('build-failure');
     expect(a[0]!.fingerprint).toBe(b[0]!.fingerprint);
   });
 

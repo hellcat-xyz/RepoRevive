@@ -17,6 +17,7 @@ import {
   supportedAtMost,
   DEFAULT_NODE_MAJOR,
 } from './runtime';
+import { upstreamRefPin } from './upstream-strategies';
 import { eraMatchedVersion, rangeLike } from './versions';
 
 // ---------------------------------------------------------------- helpers
@@ -351,6 +352,7 @@ export const replaceNodeSass: FixStrategy = {
 export const npmStrategies: FixStrategy[] = [
   legacyPeerDeps,
   gitHttps,
+  upstreamRefPin,
   nodePin,
   regenerateLockfile,
   pinMissingVersion,

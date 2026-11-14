@@ -1,0 +1,14 @@
+npm ci --no-audit --no-fund --no-update-notifier
+
+> outcomeai-login@3.0.0 postinstall
+> npm run build:hyperspeed
+
+> node scripts/build-reactbits-hyperspeed.mjs
+
+Unable to download official ReactBits HyperSpeedPresets.js: HTTP 404
+
+npm error code 1
+npm error path /workspace
+npm error command failed
+npm error command sh -c npm run build:hyperspeed
+install failed (exit 1)

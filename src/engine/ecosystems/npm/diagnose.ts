@@ -1,5 +1,6 @@
 import { builtinModules } from 'node:module';
 import type { Issue, StepName, StepResult } from '../../core/types';
+import { findHttpFailures, parseLifecycleFailure, resolveScriptChain } from './lifecycle';
 import { packageNameFromSpecifier } from './manifest';
 
 export interface NpmDiagnoseInput {
@@ -7,6 +8,10 @@ export interface NpmDiagnoseInput {
   result: Pick<StepResult, 'status' | 'logTail' | 'exitCode'>;
   declaredDeps: ReadonlySet<string>;
   runtimeMajor: number;
+  /** `name` from package.json; tells project scripts apart from dependency scripts. */
+  projectName?: string | null;
+  /** package.json `scripts`, used to locate the file behind a failing lifecycle hook. */
+  scripts?: Record<string, string>;
 }
 
 const BUILTINS = new Set(builtinModules.flatMap((m) => [m, m.replace(/^node:/, '')]));
@@ -352,6 +357,8 @@ export function diagnoseNpmOutput(input: NpmDiagnoseInput): Issue[] {
     });
   }
 
+  diagnoseStructured(input, log, add, issues);
+
   if (issues.length === 0) {
     const lastError =
       log
@@ -389,4 +396,201 @@ export function deprecationWarnings(output: string): string[] {
 /** Proactive detection from files: dependencies fetched over the retired git:// or ssh protocols. */
 export function gitProtocolUsages(text: string): number {
   return (text.match(/(?:git\+)?(?:git:\/\/github\.com\/|ssh:\/\/git@github\.com[/:])/g) ?? []).length;
+}
+
+type AddIssue = (i: Omit<Issue, 'step' | 'severity'> & { severity?: Issue['severity'] }) => void;
+
+const ANSI = new RegExp(String.fromCharCode(27) + '\\[[0-9;]*m', 'g');
+const TS_ERROR = /^(.*?)(?:\((\d+),(\d+)\)|:(\d+):(\d+))?\s*[:-]\s*error (TS\d+): (.+)$/;
+/** Codes that other rules already own (missing modules, missing declarations). */
+const TS_OWNED_ELSEWHERE = new Set(['TS2307', 'TS7016']);
+const TS_API_CODES = new Set(['TS2305', 'TS2724', 'TS2614']);
+
+/**
+ * Rules that produce structured diagnostics (script, file, command, HTTP status). Runs after the
+ * older pattern rules and, when nothing at all matched, supplies step-level fallbacks so that
+ * `unknown` is reserved for failures we genuinely cannot describe.
+ */
+function diagnoseStructured(input: NpmDiagnoseInput, log: string, add: AddIssue, issues: Issue[]): void {
+  const { step } = input;
+  const scripts = input.scripts ?? {};
+  const lifecycle = step === 'install' ? parseLifecycleFailure(log) : null;
+  const ownedByProject = !lifecycle || !input.projectName || lifecycle.package === input.projectName;
+  const scriptFile =
+    lifecycle?.file ?? (lifecycle ? (resolveScriptChain(scripts, lifecycle.hook)[0] ?? null) : null);
+
+  // Broken external resource: a script downloads something that now answers 404/410.
+  const http =
+    step === 'test'
+      ? []
+      : findHttpFailures(log).filter(
+          (h) =>
+            lifecycle !== null || /download|fetch|retriev|request|\bGET\b|curl|wget|unable/i.test(h.line),
+        );
+  if (http.length > 0) {
+    const resources = [...new Set(http.flatMap((h) => h.resources))].sort();
+    const status = http[0]!.status;
+    const where = lifecycle
+      ? `${lifecycle.hook} script${scriptFile ? ` ${scriptFile}` : ''}`
+      : `${step} step`;
+    add({
+      kind: 'broken-upstream-resource',
+      fingerprint: `broken-upstream-resource:${resources.join(',') || hash(http[0]!.line.replace(/\d+/g, '#'))}`,
+      title: `The ${where} downloads a resource that no longer exists (HTTP ${status}${
+        resources.length ? `: ${resources.join(', ')}` : ''
+      })`,
+      evidence: tail(log, /HTTP\s*(?:status\s*)?(?:code\s*)?[:=]?\s*(?:404|410)|404 Not Found|410 Gone/i, 8),
+      data: {
+        ...(scriptFile ? { file: scriptFile } : {}),
+        ...(lifecycle ? { lifecycle: lifecycle.hook, package: lifecycle.package } : {}),
+        owner: ownedByProject ? 'project' : 'dependency',
+        httpStatus: String(status),
+        resources: resources.join(','),
+      },
+      diagnostic: {
+        category: 'upstream-resource',
+        message: http[0]!.line,
+        command: lifecycle?.command ?? undefined,
+        file: scriptFile ?? undefined,
+        lifecycle: lifecycle?.hook,
+        package: lifecycle?.package,
+        httpStatus: status,
+        resources,
+      },
+    });
+  }
+
+  if (
+    /\bEJSONPARSE\b|code EINTEGRITY|\bELOCKVERIFY\b|Invalid (?:package-lock|lockfile)/i.test(log) &&
+    /package-lock|npm-shrinkwrap|EINTEGRITY|lockfile/i.test(log)
+  ) {
+    add({
+      kind: 'lockfile-corrupt',
+      fingerprint: 'lockfile-corrupt',
+      title: 'The lockfile is unreadable or fails its integrity checks',
+      evidence: tail(log, /EJSONPARSE|EINTEGRITY|ELOCKVERIFY|Invalid (?:package-lock|lockfile)/i, 6),
+      diagnostic: {
+        category: 'lockfile',
+        message: 'package-lock.json could not be parsed or verified',
+        file: 'package-lock.json',
+      },
+    });
+  }
+
+  for (const m of log.matchAll(/(?:Missing script|missing script):?\s*"?([\w:.-]+)"?/g)) {
+    add({
+      kind: 'missing-script',
+      fingerprint: `missing-script:${m[1]}`,
+      title: `package.json has no "${m[1]}" script`,
+      evidence: m[0],
+      data: { script: m[1]! },
+      diagnostic: { category: 'script', message: m[0], file: 'package.json' },
+    });
+  }
+
+  for (const m of log.matchAll(
+    /ENOENT: no such file or directory, (?:open|stat|lstat|scandir|copyfile|readdir|access) '([^']+)'/g,
+  )) {
+    const raw = m[1]!;
+    if (!raw.startsWith('/workspace/') || raw.includes('/node_modules/')) continue;
+    const rel = raw.slice('/workspace/'.length);
+    add({
+      kind: 'missing-file',
+      fingerprint: `missing-file:${rel}`,
+      title: `A file the ${step} step needs does not exist: ${rel}`,
+      evidence: tail(log, new RegExp(escapeRe(rel))),
+      data: { file: rel },
+      diagnostic: { category: 'missing-file', message: m[0], file: rel },
+    });
+  }
+
+  const tsErrors = log
+    .split(/\r?\n/)
+    .map((l) => TS_ERROR.exec(l.replace(ANSI, '')))
+    .filter((m): m is RegExpExecArray => m !== null)
+    .filter((m) => !TS_OWNED_ELSEWHERE.has(m[6]!) && !m[1]!.includes('node_modules'));
+  if (tsErrors.length > 0 && !issues.some((i) => i.kind === 'types-incompatible')) {
+    const first = tsErrors[0]!;
+    add({
+      kind: 'typescript-error',
+      fingerprint: `typescript-error:${step}`,
+      title: `TypeScript reported ${tsErrors.length} error${tsErrors.length === 1 ? '' : 's'} during ${step}`,
+      evidence: tsErrors
+        .slice(0, 6)
+        .map((m) => m[0])
+        .join('\n'),
+      data: { file: first[1]!.trim(), codes: [...new Set(tsErrors.map((m) => m[6]!))].slice(0, 8).join(',') },
+      diagnostic: { category: 'typescript', message: first[7]!, file: first[1]!.trim() || undefined },
+    });
+  }
+
+  const apiChanges: { pkg: string; message: string }[] = [];
+  for (const m of log.matchAll(/The requested module '([^']+)' does not provide an export named '([^']+)'/g))
+    apiChanges.push({ pkg: m[1]!, message: m[0] });
+  for (const m of log.matchAll(/"([^"]+)" is not exported by "([^"]+)"/g))
+    apiChanges.push({ pkg: m[2]!, message: m[0] });
+  for (const m of tsErrors.filter((t) => TS_API_CODES.has(t[6]!))) {
+    const mod = /module ['"]([^'"]+)['"]/.exec(m[7]!)?.[1];
+    if (mod) apiChanges.push({ pkg: mod, message: m[0] });
+  }
+  for (const a of apiChanges) {
+    const name = packageNameFromSpecifier(a.pkg.replace(/^.*node_modules\//, ''));
+    if (!name || BUILTINS.has(name)) continue;
+    add({
+      kind: 'dependency-api-change',
+      fingerprint: `dependency-api-change:${name}`,
+      title: `Code uses an API that the installed ${name} no longer provides`,
+      evidence: a.message,
+      data: { package: name },
+      diagnostic: { category: 'dependency-api', message: a.message, package: name },
+    });
+  }
+
+  if (issues.length > 0) return;
+
+  // Step-level fallbacks: still more useful than "The step failed".
+  if (lifecycle) {
+    add({
+      kind: 'lifecycle-script-failure',
+      fingerprint: `lifecycle-script-failure:${lifecycle.package}:${lifecycle.hook}`,
+      title: `The ${lifecycle.hook} script of ${lifecycle.package} failed${
+        lifecycle.command ? ` while running \`${lifecycle.command}\`` : ''
+      }`,
+      evidence: log.split(/\r?\n/).slice(-25).join('\n'),
+      data: {
+        lifecycle: lifecycle.hook,
+        package: lifecycle.package,
+        owner: ownedByProject ? 'project' : 'dependency',
+        ...(scriptFile ? { file: scriptFile } : {}),
+      },
+      diagnostic: {
+        category: 'lifecycle-script',
+        message: `${lifecycle.hook} exited with an error`,
+        command: lifecycle.command ?? undefined,
+        file: scriptFile ?? undefined,
+        lifecycle: lifecycle.hook,
+        package: lifecycle.package,
+      },
+    });
+    return;
+  }
+  if (step === 'build' || step === 'test') {
+    const lastError =
+      log
+        .split(/\r?\n/)
+        .reverse()
+        .find((l) => /error|ERR!|fail|exception/i.test(l)) ?? `exit code ${input.result.exitCode ?? '?'}`;
+    const kind = step === 'build' ? 'build-failure' : 'test-failure';
+    add({
+      kind,
+      fingerprint: `${kind}:${hash(lastError.replace(/\d+/g, '#'))}`,
+      title: step === 'build' ? 'The build script failed' : 'The test suite failed',
+      evidence: log.split(/\r?\n/).slice(-25).join('\n'),
+      diagnostic: {
+        category: step,
+        message: lastError.trim().slice(0, 300),
+        command: input.result.exitCode !== undefined ? `exit ${input.result.exitCode}` : undefined,
+      },
+    });
+  }
 }

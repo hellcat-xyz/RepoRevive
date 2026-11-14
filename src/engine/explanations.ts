@@ -82,6 +82,53 @@ export const ISSUE_EXPLANATIONS: Record<IssueKind, { cause: string; advice: stri
       'GitHub Actions workflows reference action versions that run on deprecated Node runtimes, retired runner images, or end-of-life Node.js versions.',
     advice: 'Keep actions on supported major versions and test on maintained Node.js releases.',
   },
+  'lifecycle-script-failure': {
+    cause:
+      'An npm lifecycle script (preinstall, install, postinstall, or prepare) exited with an error, which makes `npm ci` / `npm install` fail.',
+    advice:
+      'Read the command and file named in the diagnosis, fix the script, and avoid lifecycle scripts that need network access or generated files.',
+  },
+  'broken-upstream-resource': {
+    cause:
+      'A script downloads a file from an external URL that now answers 404 or 410. The upstream project usually moved, renamed, or deleted it after this repository was last updated, and the URL points at a floating branch such as `main`.',
+    advice:
+      'Vendor the downloaded files into the repository or pin the URL to a commit SHA so builds stop depending on a moving upstream branch.',
+  },
+  'missing-file': {
+    cause:
+      'A script or tool tried to read a file or directory that does not exist (ENOENT). It may be a generated asset, an ignored file, or a path that moved.',
+    advice: 'Commit the missing file, generate it in an earlier script, or correct the path.',
+  },
+  'missing-script': {
+    cause: 'A command ran `npm run <name>` but package.json defines no script with that name.',
+    advice: 'Add the script to package.json or fix the name in the calling script.',
+  },
+  'lockfile-corrupt': {
+    cause:
+      'package-lock.json cannot be parsed or fails integrity checks (EJSONPARSE, EINTEGRITY, merge-conflict markers).',
+    advice: 'Delete the lockfile and run `npm install` to create a clean one, then review the diff.',
+  },
+  'typescript-error': {
+    cause:
+      'The TypeScript compiler reported type errors. The code and its dependencies (or the compiler version) no longer agree.',
+    advice:
+      'Fix the reported errors, or pin the TypeScript and @types versions the project was written against.',
+  },
+  'dependency-api-change': {
+    cause:
+      'Code uses an export or function that the installed version of a dependency no longer provides, usually after a major upgrade.',
+    advice:
+      'Pin the dependency to the major version the code was written for, or port the code to the new API.',
+  },
+  'build-failure': {
+    cause: 'The build script failed with an error that no more specific rule recognises.',
+    advice: 'Inspect the log excerpt for the first error and fix that first.',
+  },
+  'test-failure': {
+    cause:
+      'The test suite ran and reported failing tests. RepoRevive never removes or skips tests to make them pass.',
+    advice: 'Review the failing tests: they may reveal real regressions from dependency drift.',
+  },
   unknown: {
     cause: 'The step failed with an error that no built-in rule recognises.',
     advice:

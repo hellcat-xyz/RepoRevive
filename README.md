@@ -42,23 +42,30 @@ moving to an earlier step. Rejected fixes are rolled back byte-for-byte.
 
 ### Built-in diagnosis and strategies
 
-| Problem                                   | Fix (in order tried)                                                    |
-| ----------------------------------------- | ----------------------------------------------------------------------- |
-| ERESOLVE peer conflicts (npm 7+)          | `.npmrc` `legacy-peer-deps=true`                                        |
-| `git://` / SSH git dependencies           | rewrite to `git+https://`                                               |
-| node-sass / node-gyp build failures       | pin era-appropriate Node via `.nvmrc` → replace `node-sass` with `sass` |
-| OpenSSL 3 `ERR_OSSL_EVP_UNSUPPORTED`      | pin Node 16                                                             |
-| `EBADENGINE`, modern syntax on old Node   | pin the required Node                                                   |
-| lockfile out of sync, stale pins          | regenerate with `npm install --package-lock-only --ignore-scripts`      |
-| `ETARGET` missing versions                | point at an era-matched published version                               |
-| undeclared modules / missing CLI binaries | add the dependency with an era-matched version                          |
-| broken `@types/*` from floating ranges    | pin to the era-matched version                                          |
-| outdated GitHub Actions                   | action `@v4`, current runners, verified Node version (static check)     |
-| unpublished packages, timeouts, network   | suggestion only (never auto-applied)                                    |
-| anything else                             | optional AI strategy (set `LLM_API_KEY`), verified like every other fix |
+| Problem                                   | Fix (in order tried)                                                                                                                 |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| ERESOLVE peer conflicts (npm 7+)          | `.npmrc` `legacy-peer-deps=true`                                                                                                     |
+| `git://` / SSH git dependencies           | rewrite to `git+https://`                                                                                                            |
+| node-sass / node-gyp build failures       | pin era-appropriate Node via `.nvmrc` → replace `node-sass` with `sass`                                                              |
+| OpenSSL 3 `ERR_OSSL_EVP_UNSUPPORTED`      | pin Node 16                                                                                                                          |
+| `EBADENGINE`, modern syntax on old Node   | pin the required Node                                                                                                                |
+| lockfile out of sync, stale pins          | regenerate with `npm install --package-lock-only --ignore-scripts`                                                                   |
+| `ETARGET` missing versions                | point at an era-matched published version                                                                                            |
+| undeclared modules / missing CLI binaries | add the dependency with an era-matched version                                                                                       |
+| broken `@types/*` from floating ranges    | pin to the era-matched version                                                                                                       |
+| outdated GitHub Actions                   | action `@v4`, current runners, verified Node version (static check)                                                                  |
+| script downloads a file that now 404s     | pin `raw.githubusercontent.com` refs to the upstream commit current at the repo's last commit, only if the missing files exist there |
+| failing lifecycle script, TS errors, etc. | diagnosed with command, file, and evidence; AI strategy if configured                                                                |
+| unpublished packages, timeouts, network   | suggestion only (never auto-applied)                                                                                                 |
+| anything else                             | optional AI strategy (set `LLM_API_KEY`), verified like every other fix                                                              |
 
 "Era-matched" means the newest version published before the repository's last commit, so fixes match the
 code's age instead of jumping to `latest`.
+
+Every issue carries a structured diagnosis (category, command, file, lifecycle hook, HTTP status). When no
+strategy can safely fix an issue, the repair stage says which strategies were consulted and records a
+`SUGGESTED` (unverified) attempt instead of finishing silently. The upstream lookups use read-only GETs to
+`api.github.com` from the worker; `GITHUB_TOKEN` (optional) raises the rate limit.
 
 ## Security model
 

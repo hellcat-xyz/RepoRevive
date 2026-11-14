@@ -1,4 +1,4 @@
-import type { LlmClient, PackageRegistry } from '../core/ports';
+import type { LlmClient, PackageRegistry, UpstreamResolver } from '../core/ports';
 import type {
   FileEdit,
   FixProposal,
@@ -63,6 +63,8 @@ export interface StrategyContext {
   /** ISO date of the repository's last commit; used for era-matched versions. */
   commitDate: string | null;
   registry: PackageRegistry;
+  /** Read-only GitHub lookups for scripts that download upstream files; null when unavailable. */
+  upstream?: UpstreamResolver | null;
   sandbox: SandboxHelpers;
   llm: LlmClient | null;
   current: VerificationResult;

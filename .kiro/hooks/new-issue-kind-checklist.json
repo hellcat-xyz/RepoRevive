@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "New issue kind checklist",
+      "trigger": "PostFileSave",
+      "description": "Reminds the agent of the diagnoser, explanation, and test requirements whenever issue kinds change.",
+      "matcher": "src[\\\\/]engine[\\\\/]core[\\\\/]types\\.ts$",
+      "action": {
+        "type": "agent",
+        "prompt": "src/engine/core/types.ts was saved. If an IssueKind was added or changed, confirm per .kiro/steering/repair-strategies.md that it has (1) a diagnoser rule in src/engine/ecosystems/npm/diagnose.ts, (2) an entry in ISSUE_EXPLANATIONS, and (3) a test with a realistic log fixture in tests/. Also update .kiro/specs/repair-engine-upgrade before changing behaviour. Do nothing if no IssueKind changed."
+      }
+    }
+  ]
+}
