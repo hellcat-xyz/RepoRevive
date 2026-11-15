@@ -1,3 +1,6 @@
+import { assertSafeCommand } from './core/command';
+import { ResurrectionError } from './core/errors';
+import { imageFamily, isAllowedImage } from './core/images';
 import type { EventSink, Sandbox } from './core/ports';
 import type { Issue, RuntimeSelection, StepName, StepResult, VerificationResult } from './core/types';
 import { STEP_NAMES } from './core/types';
@@ -44,10 +47,16 @@ export class Verifier {
   async verify(o: VerifyOptions = {}): Promise<Verification> {
     const runtime = await this.runtime();
     for (const w of runtime.warnings) this.warnings.add(w);
+    if (!isAllowedImage(runtime.image) || imageFamily(runtime.image) !== runtime.family)
+      throw new ResurrectionError(
+        'INTERNAL',
+        `Runtime image ${runtime.image} is not allowed for ${runtime.family}`,
+      );
     await this.sandbox.ensureImage(runtime.image, (line) =>
       this.sink.emit({ type: 'log', level: 'debug', message: line, source: 'docker' }),
     );
     const plan = await this.eco.plan(this.ws, runtime, this.opts.timeouts);
+    for (const p of plan) if (p.command) assertSafeCommand(p.command);
     const fingerprint = await this.eco.installFingerprint(this.ws, runtime);
     const steps = {} as Record<StepName, StepResult>;
 
@@ -83,7 +92,7 @@ export class Verifier {
         this.sink.emit({
           type: 'log',
           level: 'info',
-          message: 'Dependencies unchanged; reusing installed node_modules.',
+          message: 'Dependencies unchanged; reusing the installed dependencies.',
           source: 'install',
         });
         continue;
@@ -153,7 +162,7 @@ export class Verifier {
         cacheDir: this.opts.cacheDir,
         network,
         timeoutMs,
-        env: this.opts.env,
+        env: { ...this.opts.env, ...this.eco.sandboxEnv(runtime) },
         label: step,
       },
       (line) => this.sink.emit({ type: 'log', level: 'debug', message: line, source: step }),

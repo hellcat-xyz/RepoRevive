@@ -1,19 +1,22 @@
 import { reportToMarkdown, type ResurrectionReport } from '@/engine/report';
+import type { NextRequest } from 'next/server';
 import { jsonError, validJobId } from '@/server/api';
+import { canView, currentUser } from '@/server/auth';
 import { prisma } from '@/server/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   if (!validJobId(id)) return jsonError(400, 'INVALID_ID', 'Invalid resurrection id.');
   const format = new URL(req.url).searchParams.get('format') === 'json' ? 'json' : 'md';
   const job = await prisma.resurrection.findUnique({
     where: { id },
-    select: { owner: true, name: true, report: true },
+    select: { owner: true, name: true, report: true, ownerId: true },
   });
-  if (!job) return jsonError(404, 'NOT_FOUND', 'No such resurrection.');
+  if (!job || !canView(job, await currentUser(req)))
+    return jsonError(404, 'NOT_FOUND', 'No such resurrection.');
   if (!job.report) return jsonError(409, 'NOT_READY', 'The report is not ready yet.');
   const base = `${job.owner}-${job.name}-resurrection-report`.replace(/[^A-Za-z0-9._-]/g, '_');
   const report = job.report as unknown as ResurrectionReport;

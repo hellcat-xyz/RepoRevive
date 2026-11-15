@@ -1,5 +1,6 @@
 import type { AttemptRecord, Health, JobStatus, StageName } from '@/engine/core/types';
-import type { ResurrectionReport } from '@/engine/report';
+import type { ProjectAnalysis } from '@/engine/ecosystems/types';
+import type { ReportVerification, ResurrectionReport } from '@/engine/report';
 
 export type { AttemptRecord, Health, JobStatus, StageName, ResurrectionReport };
 
@@ -24,6 +25,14 @@ export interface JobSnapshot {
   report: ResurrectionReport | null;
   attempts: AttemptRecord[];
   hasPatch: boolean;
+  /** Detected ecosystem id (npm, python, rust...) and package manager; null for historic jobs. */
+  ecosystem: string | null;
+  packageManager: string | null;
+  analysis: ProjectAnalysis | null;
+  baseline: ReportVerification | null;
+  publishMode: 'PATCH_ONLY' | 'REVIEW_PR' | 'AUTO_PR';
+  /** True when the viewer owns the job (publication controls are shown only then). */
+  owned: boolean;
 }
 
 export interface JobSummary {
@@ -40,7 +49,7 @@ export interface JobSummary {
 /** One SSE message. */
 export interface ClientEvent {
   seq: number;
-  type: 'stage' | 'status' | 'log' | 'heartbeat' | 'issue' | 'attempt' | 'done';
+  type: 'stage' | 'status' | 'log' | 'heartbeat' | 'issue' | 'attempt' | 'done' | 'publication';
   level: string;
   message: string;
   data: Record<string, unknown> | null;

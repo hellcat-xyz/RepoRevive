@@ -10,7 +10,7 @@ const mono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-jetbrains', 
 export const metadata: Metadata = {
   title: { default: 'RepoRevive — bring dead repositories back to life', template: '%s · RepoRevive' },
   description:
-    'Paste a GitHub URL. RepoRevive diagnoses why an abandoned Node.js project no longer installs, builds, or tests, repairs it in a sandbox, and hands you a verified patch.',
+    'Paste a GitHub URL. RepoRevive diagnoses why an abandoned Node.js, Python or Rust project no longer installs, builds, or tests, repairs it in a sandbox, and hands you a verified patch.',
 };
 
 export const viewport: Viewport = { themeColor: '#07080a', colorScheme: 'dark' };

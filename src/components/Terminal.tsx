@@ -25,6 +25,7 @@ const SOURCE_CLASS: Record<string, string> = {
   repair: 'text-ecto-400/80',
   patch: 'text-lime-400/80',
   verify: 'text-cyan-400/80',
+  publish: 'text-spirit-300',
   analyze: 'text-indigo-300/80',
   baseline: 'text-sky-300/80',
   report: 'text-spirit-300/80',

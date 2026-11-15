@@ -1,3 +1,4 @@
+import { detectPackageManager } from './package-manager';
 import type { Workspace } from '../../core/workspace';
 import type { ProjectAnalysis } from '../types';
 import type { RuntimeDeclaration } from './runtime';
@@ -90,6 +91,7 @@ function extensionOf(file: string): string | null {
 }
 
 export async function analyzeNpmProject(ws: Workspace): Promise<ProjectAnalysis> {
+  const pm = await detectPackageManager(ws);
   const manifest = await readManifest(ws);
   const warnings: string[] = [];
   if (!manifest) warnings.push('package.json is missing or is not valid JSON.');
@@ -110,7 +112,7 @@ export async function analyzeNpmProject(ws: Workspace): Promise<ProjectAnalysis>
     } catch {
       warnings.push(`${npmLock} is not valid JSON.`);
     }
-  } else if (lockfiles.length > 0) {
+  } else if (lockfiles.length > 0 && pm.manager === 'npm') {
     warnings.push(
       `Only ${lockfiles.join(', ')} found. RepoRevive MVP installs with npm, so versions may differ.`,
     );
@@ -158,7 +160,7 @@ export async function analyzeNpmProject(ws: Workspace): Promise<ProjectAnalysis>
 
   return {
     ecosystem: 'npm',
-    packageManager: 'npm',
+    packageManager: pm.manager,
     projectName: typeof json.name === 'string' ? json.name : null,
     description: typeof json.description === 'string' ? json.description.slice(0, 300) : null,
     dependencies,

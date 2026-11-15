@@ -38,39 +38,77 @@ enum AttemptStatus {
   ERROR
 }
 
-model Resurrection {
-  id           String    @id @default(cuid())
-  repoUrl      String
-  owner        String
-  name         String
-  status       JobStatus @default(QUEUED)
-  health       Health    @default(DEAD)
-  heartbeat    Int       @default(0)
-  currentStage String?
-  commitSha    String?
-  commitDate   DateTime?
-  runtime      String?
-  analysis     Json?
-  baseline     Json?
-  final        Json?
-  report       Json?
-  patch        String?
-  errorCode    String?
-  errorMessage String?
-  lockedBy     String?
-  lockedAt     DateTime?
-  clientIp     String?
-  cancelRequested Boolean @default(false)
-  createdAt    DateTime  @default(now())
-  startedAt    DateTime?
-  finishedAt   DateTime?
-  updatedAt    DateTime  @updatedAt
+enum PublishMode {
+  PATCH_ONLY
+  REVIEW_PR
+  AUTO_PR
+}
 
-  attempts RepairAttempt[]
-  events   JobEvent[]
+enum PublicationStatus {
+  NOT_REQUESTED
+  PENDING_APPROVAL
+  QUEUED
+  AUTHORIZING
+  PREPARING_BRANCH
+  PUBLISHING_COMMIT
+  CREATING_PR
+  CREATED
+  FAILED
+  BLOCKED
+  CANCELLED
+  AUTH_EXPIRED
+}
+
+enum ConnectionStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
+model Resurrection {
+  id                  String      @id @default(cuid())
+  repoUrl             String
+  owner               String
+  name                String
+  status              JobStatus   @default(QUEUED)
+  health              Health      @default(DEAD)
+  heartbeat           Int         @default(0)
+  currentStage        String?
+  commitSha           String?
+  commitDate          DateTime?
+  runtime             String?
+  analysis            Json?
+  baseline            Json?
+  final               Json?
+  report              Json?
+  patch               String?
+  errorCode           String?
+  errorMessage        String?
+  lockedBy            String?
+  lockedAt            DateTime?
+  clientIp            String?
+  cancelRequested     Boolean     @default(false)
+  /// Ecosystem id selected by detection (npm, python, rust, ...). Null for historic jobs.
+  ecosystem           String?
+  packageManager      String?
+  /// Authenticated owner (GitHub user). Null for anonymous/historic jobs.
+  ownerId             String?
+  publishMode         PublishMode @default(PATCH_ONLY)
+  allowPartialPublish Boolean     @default(false)
+  allowForkPublish    Boolean     @default(false)
+  createdAt           DateTime    @default(now())
+  startedAt           DateTime?
+  finishedAt          DateTime?
+  updatedAt           DateTime    @updatedAt
+
+  attempts    RepairAttempt[]
+  events      JobEvent[]
+  ownerUser   User?           @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+  publication Publication?
 
   @@index([status, createdAt])
   @@index([createdAt])
+  @@index([ownerId, createdAt])
 }
 
 model RepairAttempt {
@@ -108,4 +146,108 @@ model JobEvent {
   resurrection Resurrection @relation(fields: [resurrectionId], references: [id], onDelete: Cascade)
 
   @@unique([resurrectionId, seq])
+}
+
+model User {
+  id           String   @id @default(cuid())
+  githubUserId Int      @unique
+  login        String
+  avatarUrl    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  connection    GithubConnection?
+  installations GithubInstallation[]
+  permissions   RepositoryPermission[]
+  resurrections Resurrection[]
+}
+
+/// OAuth credentials of a user. Tokens are AES-256-GCM encrypted; plaintext never touches the database.
+model GithubConnection {
+  id                    String           @id @default(cuid())
+  userId                String           @unique
+  status                ConnectionStatus @default(ACTIVE)
+  accessTokenEnc        String
+  accessTokenExpiresAt  DateTime?
+  refreshTokenEnc       String?
+  refreshTokenExpiresAt DateTime?
+  lastValidatedAt       DateTime         @default(now())
+  revokedAt             DateTime?
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model GithubInstallation {
+  id                  String   @id @default(cuid())
+  installationId      Int      @unique
+  userId              String
+  accountLogin        String
+  accountType         String
+  repositorySelection String
+  permissions         Json
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model RepositoryPermission {
+  id            String   @id @default(cuid())
+  userId        String
+  owner         String
+  name          String
+  defaultBranch String
+  canPush       Boolean
+  canFork       Boolean
+  isPrivate     Boolean
+  checkedAt     DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, owner, name])
+}
+
+/// One publication per resurrection (unique), so retries and restarts cannot create a second pull request.
+model Publication {
+  id             String            @id @default(cuid())
+  resurrectionId String            @unique
+  idempotencyKey String            @unique
+  mode           PublishMode
+  status         PublicationStatus @default(PENDING_APPROVAL)
+  targetOwner    String
+  targetRepo     String
+  baseBranch     String
+  baseSha        String
+  headOwner      String?
+  headRepo       String?
+  headBranch     String
+  commitSha      String?
+  prNumber       Int?
+  prUrl          String?
+  isDraft        Boolean           @default(true)
+  /// The user explicitly allowed creating a fork when they lack push access.
+  allowFork      Boolean           @default(false)
+  /// Files left out of the pull request on purpose (e.g. workflow files), with reasons.
+  excluded       Json?
+  title          String
+  body           String
+  /// Exact accepted file changes: [{ path, before, after }]. Immutable once queued.
+  changes        Json
+  attempts       Int               @default(0)
+  lastError      String?
+  lastErrorCode  String?
+  lockedBy       String?
+  lockedAt       DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  completedAt    DateTime?
+
+  resurrection Resurrection @relation(fields: [resurrectionId], references: [id], onDelete: Cascade)
+
+  @@index([status, updatedAt])
+  @@index([targetOwner, targetRepo, baseSha])
 }

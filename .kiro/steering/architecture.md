@@ -13,7 +13,8 @@ src/
   lib/            Shared pure helpers usable by UI and server (github URL parsing, health labels).
   engine/         The resurrection pipeline. Pure TypeScript, framework-free.
     core/         Ecosystem-agnostic types, state machine, verification decisions, patch, workspace.
-    ecosystems/   One folder per ecosystem (npm today). Implements the `Ecosystem` interface.
+    ecosystems/   One folder per ecosystem (npm, python, rust, go, maven). Implements the `Ecosystem` interface.
+    publish/      Host-side PR publishing: policy, state machine, publisher, GitHub REST port.
     ci/           GitHub Actions analysis and static fixes (ecosystem-agnostic).
     llm/          Optional LLM-backed fix strategy (OpenAI-compatible API).
     pipeline.ts   Orchestrates stages; depends only on ports (interfaces).

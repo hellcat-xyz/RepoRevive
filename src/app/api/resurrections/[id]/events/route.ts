@@ -1,5 +1,7 @@
 import { TERMINAL_STATUSES } from '@/engine/core/state';
+import type { NextRequest } from 'next/server';
 import { jsonError, validJobId } from '@/server/api';
+import { canView, currentUser } from '@/server/auth';
 import { prisma } from '@/server/db';
 
 export const runtime = 'nodejs';
@@ -13,11 +15,15 @@ const BATCH = 500;
  * Server-Sent Events stream of a job's persisted events. Each message carries `id: <seq>`, so the
  * browser's automatic reconnect sends Last-Event-ID and resumes without loss or duplication.
  */
-export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   if (!validJobId(id)) return jsonError(400, 'INVALID_ID', 'Invalid resurrection id.');
-  const exists = await prisma.resurrection.findUnique({ where: { id }, select: { id: true } });
-  if (!exists) return jsonError(404, 'NOT_FOUND', 'No such resurrection.');
+  const exists = await prisma.resurrection.findUnique({
+    where: { id },
+    select: { id: true, ownerId: true, publishMode: true },
+  });
+  if (!exists || !canView(exists, await currentUser(req)))
+    return jsonError(404, 'NOT_FOUND', 'No such resurrection.');
 
   const url = new URL(req.url);
   const fromHeader = Number(req.headers.get('last-event-id'));
@@ -42,6 +48,21 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       send('retry: 2000\n\n');
       let lastSend = Date.now();
       let terminalPolls = 0;
+      let waitedForPublication = 0;
+      /** After done, an automatic PR may still be publishing; keep streaming until it settles (max ~5 min). */
+      const publicationPending = async () => {
+        if (exists.publishMode !== 'AUTO_PR' || waitedForPublication++ > 400) return false;
+        const pub = await prisma.publication.findUnique({
+          where: { resurrectionId: id },
+          select: { status: true },
+        });
+        return (
+          !pub ||
+          ['QUEUED', 'AUTHORIZING', 'PREPARING_BRANCH', 'PUBLISHING_COMMIT', 'CREATING_PR'].includes(
+            pub.status,
+          )
+        );
+      };
 
       try {
         while (!closed) {
@@ -65,7 +86,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
             lastSend = Date.now();
             if (e.type === 'done') done = true;
           }
-          if (done) {
+          if (done && !(await publicationPending())) {
             send('event: end\ndata: {}\n\n');
             break;
           }
@@ -73,7 +94,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
             // Jobs that ended without a `done` event (e.g. interrupted worker) must still close the stream.
             const job = await prisma.resurrection.findUnique({ where: { id }, select: { status: true } });
             if (!job || TERMINAL_STATUSES.has(job.status)) {
-              if (++terminalPolls >= 2) {
+              if (++terminalPolls >= 2 && !(await publicationPending())) {
                 send('event: end\ndata: {}\n\n');
                 break;
               }

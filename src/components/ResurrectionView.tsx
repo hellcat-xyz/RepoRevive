@@ -8,8 +8,10 @@ import { AttemptCard } from './AttemptCard';
 import { Celebration } from './Celebration';
 import { Dashboard } from './Dashboard';
 import { EcgMonitor } from './EcgMonitor';
+import { EcosystemPanel } from './EcosystemPanel';
 import { GraveyardScene } from './GraveyardScene';
 import { HealthBadge } from './HealthBadge';
+import { PublicationPanel } from './PublicationPanel';
 import { StageTimeline } from './StageTimeline';
 import { Terminal } from './Terminal';
 import { useResurrection } from './useResurrection';
@@ -124,6 +126,8 @@ export function ResurrectionView({ id }: { id: string }) {
           )}
         </motion.div>
 
+        {snap && <EcosystemPanel snap={snap} />}
+
         {/* live */}
         <div className="mt-6 grid gap-5 lg:grid-cols-5">
           <div className="h-[520px] lg:col-span-3">
@@ -162,6 +166,15 @@ export function ResurrectionView({ id }: { id: string }) {
             </ul>
           </section>
         </div>
+
+        {snap?.owned && snap.publishMode !== 'PATCH_ONLY' && (
+          <PublicationPanel
+            jobId={id}
+            tick={r.publicationTick}
+            finished={r.finished}
+            hasChanges={(snap.report?.modifiedFiles.length ?? 0) > 0}
+          />
+        )}
 
         {/* final dashboard */}
         {r.finished && snap?.report && (

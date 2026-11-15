@@ -4,10 +4,33 @@ import type { Ecosystem, StepPlan } from '../types';
 import { analyzeNpmProject, readRuntimeDeclarations } from './analyze';
 import { deprecationWarnings, diagnoseNpmOutput, gitProtocolUsages } from './diagnose';
 import { dependenciesOf, isPlaceholderTest, readManifest, scriptsOf } from './manifest';
+import { detectPackageManager, installCommand, PM_ENV, runScriptCommand } from './package-manager';
 import { selectNodeRuntime } from './runtime';
 import { npmStrategies } from './strategies';
 
-const INSTALL_INPUTS = ['package.json', 'package-lock.json', 'npm-shrinkwrap.json', '.npmrc'];
+const INSTALL_INPUTS = [
+  'package.json',
+  'package-lock.json',
+  'npm-shrinkwrap.json',
+  '.npmrc',
+  'pnpm-lock.yaml',
+  'yarn.lock',
+  '.yarnrc.yml',
+];
+export const NODE_SANDBOX_ENV: Record<string, string> = {
+  NODE_ENV: 'development',
+  npm_config_update_notifier: 'false',
+  npm_config_fund: 'false',
+  npm_config_audit: 'false',
+  npm_config_loglevel: 'warn',
+  ADBLOCK: '1',
+  DISABLE_OPENCOLLECTIVE: '1',
+  HUSKY: '0',
+  PUPPETEER_SKIP_DOWNLOAD: '1',
+  PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: '1',
+  CYPRESS_INSTALL_BINARY: '0',
+  BROWSERSLIST_IGNORE_OLD_DATA: '1',
+};
 const COMMON_FLAGS = ['--no-audit', '--no-fund', '--no-update-notifier'];
 
 async function npmLockfile(ws: Parameters<Ecosystem['detect']>[0]): Promise<string | null> {
@@ -19,6 +42,26 @@ async function npmLockfile(ws: Parameters<Ecosystem['detect']>[0]): Promise<stri
 export const npmEcosystem: Ecosystem = {
   id: 'npm',
   displayName: 'Node.js / npm',
+  language: 'Node.js',
+  family: 'node',
+  supportsCiModernize: true,
+
+  sandboxEnv: () => ({ ...NODE_SANDBOX_ENV, ...PM_ENV }),
+
+  async detection(ws) {
+    const m = await readManifest(ws);
+    if (!m) return null;
+    const evidence = ['package.json'];
+    let confidence = 0.55;
+    if (await npmLockfile(ws)) {
+      evidence.push('npm lockfile');
+      confidence = 0.95;
+    } else if (scriptsOf(m.json).build || scriptsOf(m.json).test) {
+      evidence.push('build/test scripts');
+      confidence = 0.8;
+    }
+    return { confidence, evidence };
+  },
 
   async detect(ws) {
     return (await ws.read('package.json').catch(() => null)) !== null;
@@ -34,17 +77,25 @@ export const npmEcosystem: Ecosystem = {
     const m = await readManifest(ws);
     const scripts = m ? scriptsOf(m.json) : {};
     const lock = await npmLockfile(ws);
-    const install = lock
-      ? ['npm', 'ci', ...COMMON_FLAGS]
-      : // No lockfile: install fresh without writing one, so the working tree only changes via verified fixes.
-        ['sh', '-c', `rm -rf node_modules && npm install --no-package-lock ${COMMON_FLAGS.join(' ')}`];
+    const pm = await detectPackageManager(ws);
+    const install =
+      installCommand(pm) ??
+      (lock
+        ? ['npm', 'ci', ...COMMON_FLAGS]
+        : // No lockfile: install fresh without writing one, so the working tree only changes via verified fixes.
+          ['sh', '-c', `rm -rf node_modules && npm install --no-package-lock ${COMMON_FLAGS.join(' ')}`]);
     return [
       { step: 'install', command: install, network: 'bridge', timeoutMs: timeouts.install },
       scripts.build?.trim()
-        ? { step: 'build', command: ['npm', 'run', 'build'], network: 'none', timeoutMs: timeouts.build }
+        ? {
+            step: 'build',
+            command: runScriptCommand(pm, 'build'),
+            network: 'none',
+            timeoutMs: timeouts.build,
+          }
         : { step: 'build', command: null, skipReason: 'not-applicable', network: 'none', timeoutMs: 0 },
       !isPlaceholderTest(scripts.test)
-        ? { step: 'test', command: ['npm', 'test'], network: 'none', timeoutMs: timeouts.test }
+        ? { step: 'test', command: runScriptCommand(pm, 'test'), network: 'none', timeoutMs: timeouts.test }
         : { step: 'test', command: null, skipReason: 'no-test-suite', network: 'none', timeoutMs: 0 },
     ];
   },

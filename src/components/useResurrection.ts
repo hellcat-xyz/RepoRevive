@@ -19,6 +19,8 @@ export interface ResurrectionState {
   /** True only when the job finished while this page was open (drives the celebration). */
   finishedLive: boolean;
   error: string | null;
+  /** Increments on every publication event so the PR panel can refetch immediately. */
+  publicationTick: number;
 }
 
 const MAX_LINES = 8000;
@@ -36,6 +38,7 @@ export function useResurrection(id: string) {
     finished: false,
     finishedLive: false,
     error: null,
+    publicationTick: 0,
   });
   const pending = useRef<TerminalLine[]>([]);
   const seen = useRef(new Set<number>());
@@ -109,6 +112,7 @@ export function useResurrection(id: string) {
                 ts: e.ts,
               });
               setState((s) => ({ ...s, stage: d.stage as StageName }));
+              void loadSnapshot().catch(() => undefined); // picks up the detected ecosystem and baseline as they appear
               break;
             case 'status':
               setState((s) => ({ ...s, status: d.status as JobStatus, health: d.health as Health }));
@@ -123,6 +127,16 @@ export function useResurrection(id: string) {
               );
               break;
             }
+            case 'publication':
+              pending.current.push({
+                seq: e.seq,
+                level: e.level,
+                message: e.message,
+                source: 'publish',
+                ts: e.ts,
+              });
+              setState((s) => ({ ...s, publicationTick: s.publicationTick + 1 }));
+              break;
             case 'done':
               setState((s) => ({
                 ...s,

@@ -39,5 +39,5 @@ Use `source` tags the Terminal knows: `clone`, `analyze`, `baseline`, `diagnose`
 
 ## Host-side network
 
-The host may only perform read-only GETs to `api.github.com` (via `UpstreamResolver`) and the npm registry (via `PackageRegistry`). Validate every URL component. Repository code
+The host may only perform read-only GETs to `api.github.com` (via `UpstreamResolver`) and the package registries (via `PackageRegistry`): npm, PyPI, crates.io, the Go proxy, Maven Central search. The only host-side writes are the authorised publication calls in `engine/publish` (see `v2-ecosystems-and-publishing.md`). Validate every URL component. Repository code
 never runs on the host.

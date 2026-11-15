@@ -36,7 +36,10 @@ export function toAttempt(a: RepairAttempt): AttemptRecord {
   };
 }
 
-export function toSnapshot(job: Resurrection & { attempts: RepairAttempt[] }): JobSnapshot {
+export function toSnapshot(
+  job: Resurrection & { attempts: RepairAttempt[] },
+  viewerId: string | null = null,
+): JobSnapshot {
   return {
     id: job.id,
     repoUrl: job.repoUrl,
@@ -57,6 +60,12 @@ export function toSnapshot(job: Resurrection & { attempts: RepairAttempt[] }): J
     report: (job.report ?? null) as ResurrectionReport | null,
     attempts: job.attempts.sort((x, y) => x.seq - y.seq).map(toAttempt),
     hasPatch: Boolean(job.patch && job.patch.length > 0),
+    ecosystem: job.ecosystem,
+    packageManager: job.packageManager,
+    analysis: (job.analysis ?? null) as JobSnapshot['analysis'],
+    baseline: (job.baseline ?? null) as JobSnapshot['baseline'],
+    publishMode: job.publishMode,
+    owned: job.ownerId !== null && job.ownerId === viewerId,
   };
 }
 

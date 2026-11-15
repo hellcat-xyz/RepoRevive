@@ -1,3 +1,4 @@
+import type { RuntimeFamily } from '../core/images';
 import type { LlmClient, PackageRegistry, UpstreamResolver } from '../core/ports';
 import type {
   FileEdit,
@@ -36,6 +37,8 @@ export interface ProjectAnalysis {
   fileCount: number;
   workflows: string[];
   isMonorepo: boolean;
+  /** Ecosystem-specific facts (build backend, edition, ...) shown in the UI and report. */
+  details?: Record<string, string>;
   warnings: string[];
 }
 
@@ -55,6 +58,9 @@ export interface SandboxHelpers {
    * restored before returning.
    */
   regenerateLockfile(edits: FileEdit[]): Promise<FileEdit | null>;
+  /** Like 
+egenerateLockfile, but returns every regenerated file that changed (e.g. go.mod and go.sum). */
+  regenerateFiles(edits: FileEdit[]): Promise<FileEdit[]>;
 }
 
 export interface StrategyContext {
@@ -67,6 +73,10 @@ export interface StrategyContext {
   upstream?: UpstreamResolver | null;
   sandbox: SandboxHelpers;
   llm: LlmClient | null;
+  /** Ecosystem this job is running; strategies and prompts must not cross ecosystems. */
+  ecosystem?: { id: string; packageManager: string };
+  /** Attempts recorded so far in this job. */
+  attempts?: { title: string; status: string; reason?: string }[];
   current: VerificationResult;
   log: (message: string) => void;
 }
@@ -84,10 +94,26 @@ export interface DiagnoseContext {
   runtime: RuntimeSelection;
 }
 
+export interface EcosystemDetection {
+  /** 0..1. 0.9+ means authoritative manifest plus lockfile/tooling evidence. */
+  confidence: number;
+  evidence: string[];
+}
+
 export interface Ecosystem {
   id: string;
   displayName: string;
+  /** Language family shown in the UI, e.g. "Python". */
+  language: string;
+  /** Runtime family this ecosystem executes in. */
+  family: RuntimeFamily;
   detect(ws: Workspace): Promise<boolean>;
+  /** Confidence-scored detection; null when the ecosystem does not apply. */
+  detection(ws: Workspace): Promise<EcosystemDetection | null>;
+  /** Extra allow-listed env for sandbox commands (merged over the base env). */
+  sandboxEnv(runtime: RuntimeSelection): Record<string, string>;
+  /** Whether Node-specific GitHub Actions modernisation applies. */
+  supportsCiModernize: boolean;
   analyze(ws: Workspace): Promise<ProjectAnalysis>;
   selectRuntime(ws: Workspace): Promise<RuntimeSelection>;
   plan(ws: Workspace, runtime: RuntimeSelection, timeouts: Record<StepName, number>): Promise<StepPlan[]>;
@@ -99,6 +125,8 @@ export interface Ecosystem {
   /** Informational findings from logs (e.g. deprecated packages). */
   warningsFromLogs(output: string): string[];
   /** Command (argv) that regenerates the lockfile without running scripts, or null if no lockfile. */
-  lockfileRegeneration(ws: Workspace): Promise<{ command: string[]; lockfile: string } | null>;
+  lockfileRegeneration(
+    ws: Workspace,
+  ): Promise<{ command: string[]; lockfile: string; extraFiles?: string[] } | null>;
   strategies: FixStrategy[];
 }

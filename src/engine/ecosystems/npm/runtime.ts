@@ -34,7 +34,15 @@ export function nodeImage(major: number): string {
 }
 
 export function runtimeFor(major: number, source: string, warnings: string[] = []): RuntimeSelection {
-  return { image: nodeImage(major), label: `Node.js ${major}`, major, source, warnings };
+  return {
+    family: 'node',
+    version: String(major),
+    image: nodeImage(major),
+    label: `Node.js ${major}`,
+    major,
+    source,
+    warnings,
+  };
 }
 
 export function nearestSupported(major: number): number {

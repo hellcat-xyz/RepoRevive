@@ -100,11 +100,19 @@ describe('P-R2: the upstream strategy never targets paths outside the workspace'
           };
           const proposals = await upstreamRefPin.propose(issue, {
             ws,
-            runtime: { image: 'node:22', label: 'Node.js 22', major: 22, source: 't', warnings: [] },
+            runtime: {
+              family: 'node',
+              version: '22',
+              image: 'node:22',
+              label: 'Node.js 22',
+              major: 22,
+              source: 't',
+              warnings: [],
+            },
             commitDate: '2024-01-01T00:00:00Z',
             registry: new FakeRegistry({}),
             upstream: up,
-            sandbox: { regenerateLockfile: async () => null },
+            sandbox: { regenerateLockfile: async () => null, regenerateFiles: async () => [] },
             llm: null,
             current: {} as never,
             log: () => undefined,

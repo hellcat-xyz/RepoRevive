@@ -129,6 +129,47 @@ export const ISSUE_EXPLANATIONS: Record<IssueKind, { cause: string; advice: stri
       'The test suite ran and reported failing tests. RepoRevive never removes or skips tests to make them pass.',
     advice: 'Review the failing tests: they may reveal real regressions from dependency drift.',
   },
+  'dependency-conflict': {
+    cause:
+      'The resolver could not find one set of versions that satisfies every declared constraint (pip ResolutionImpossible, Cargo version conflicts, Maven convergence).',
+    advice: 'Loosen or align the conflicting constraints, preferring versions from the repository era.',
+  },
+  'toolchain-mismatch': {
+    cause:
+      'The installed language toolchain is older or newer than the project (or one of its dependencies) requires.',
+    advice: 'Pin the toolchain version the project was written for (rust-toolchain.toml, .python-version).',
+  },
+  'unsupported-edition': {
+    cause: 'The manifest declares a language edition that the selected compiler does not understand.',
+    advice: 'Use a compiler that supports the edition, or lower the edition if the code allows it.',
+  },
+  'removed-stdlib-api': {
+    cause: 'The code uses a standard-library module or function that was removed in the Python version used.',
+    advice: 'Run on the Python version the code targets, or port the call to its replacement.',
+  },
+  'legacy-syntax': {
+    cause: 'The source uses syntax from an older language version (for example Python 2 print statements).',
+    advice: 'Port the syntax, or run on the language version the code was written for.',
+  },
+  'import-path': {
+    cause:
+      'Tests cannot import the project package, usually because it is not installed or the source root is not on the import path.',
+    advice: 'Install the project in the environment or configure `pythonpath` for pytest.',
+  },
+  'missing-feature': {
+    cause:
+      'Code or a dependency needs a Cargo feature (or optional extra) that the manifest does not enable.',
+    advice: 'Enable the named feature on the dependency in the manifest.',
+  },
+  'build-script-failure': {
+    cause:
+      'A build script (build.rs, setup.py, or a plugin) failed, often because a system library or tool is missing.',
+    advice: 'Install the missing system dependency or use a release that ships prebuilt artifacts.',
+  },
+  'compile-error': {
+    cause: 'The compiler rejected the source code.',
+    advice: 'Fix the reported errors; they commonly come from dependency API changes after an update.',
+  },
   unknown: {
     cause: 'The step failed with an error that no built-in rule recognises.',
     advice:

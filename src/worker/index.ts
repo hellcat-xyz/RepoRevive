@@ -2,6 +2,10 @@ import { hostname } from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
+import { HttpGoProxyRegistry } from '@/engine/ecosystems/go/registry-http';
+import { HttpCratesRegistry } from '@/engine/ecosystems/rust/registry-http';
+import { HttpMavenRegistry } from '@/engine/ecosystems/maven/registry-http';
+import { HttpPypiRegistry } from '@/engine/ecosystems/python/registry-http';
 import { HttpNpmRegistry } from '@/engine/ecosystems/npm/registry-http';
 import { OpenAiCompatibleClient } from '@/engine/llm/openai-client';
 import { ResurrectionPipeline } from '@/engine/pipeline';
@@ -11,6 +15,7 @@ import { DockerSandbox } from '@/sandbox/docker-sandbox';
 import { config } from '@/server/config';
 import { prisma } from '@/server/db';
 import { DbEventSink } from '@/server/event-sink';
+import { afterJob, processPublications } from '@/server/publication-worker';
 import { claimNextJob, failStaleJobs, maxEventSeq, PrismaJobReporter, touchLock } from '@/server/jobs';
 
 const cfg = config();
@@ -23,6 +28,12 @@ const running = new Map<string, Promise<void>>();
 let stopping = false;
 
 const registry = new HttpNpmRegistry();
+const registries = {
+  python: new HttpPypiRegistry(),
+  rust: new HttpCratesRegistry(),
+  go: new HttpGoProxyRegistry(),
+  maven: new HttpMavenRegistry(),
+};
 const upstream = new GitHubUpstreamResolver({ token: cfg.githubToken });
 const llm = cfg.llm ? new OpenAiCompatibleClient(cfg.llm) : null;
 
@@ -52,6 +63,7 @@ async function runJob(jobId: string): Promise<void> {
     {
       sandbox,
       registry,
+      registries,
       upstream,
       llm,
       sink,
@@ -74,6 +86,8 @@ async function runJob(jobId: string): Promise<void> {
 
   try {
     const outcome = await pipeline.run({ jobId, repo: parsed.repo, jobDir });
+    await sink.flush();
+    await afterJob(prisma, cfg.github, jobId, outcome);
     console.info(
       `[worker] ${jobId} ${parsed.repo.owner}/${parsed.repo.name}: ${outcome.status} / ${outcome.health}`,
     );
@@ -107,6 +121,11 @@ async function loop() {
       }
     } catch (err) {
       console.error('[worker] poll failed', err);
+    }
+    try {
+      await processPublications(prisma, cfg.github, workerId);
+    } catch (err) {
+      console.error('[worker] publication poll failed', err);
     }
     await new Promise((r) => setTimeout(r, POLL_MS));
   }

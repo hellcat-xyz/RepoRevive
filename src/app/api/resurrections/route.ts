@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { ResurrectionError } from '@/engine/core/errors';
 import { parseGitHubUrl } from '@/lib/github';
 import { jsonError, toSummary } from '@/server/api';
+import { currentUser, forbiddenOrigin, sameOrigin } from '@/server/auth';
 import { config } from '@/server/config';
 import { prisma } from '@/server/db';
 import { checkRepository } from '@/server/github-meta';
@@ -12,7 +13,13 @@ import { clientIp, RateLimiter } from '@/server/rate-limit';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const BodySchema = z.object({ url: z.string().min(1).max(300) });
+const BodySchema = z.object({
+  url: z.string().min(1).max(300),
+  /** Defaults to PATCH_ONLY. Publishing requires a signed-in GitHub user. */
+  publishMode: z.enum(['PATCH_ONLY', 'REVIEW_PR', 'AUTO_PR']).default('PATCH_ONLY'),
+  allowFork: z.boolean().default(false),
+  allowPartial: z.boolean().default(false),
+});
 
 const globalForLimiter = globalThis as unknown as { rrLimiter?: RateLimiter };
 
@@ -37,7 +44,24 @@ export async function POST(req: NextRequest) {
     return jsonError(400, 'INVALID_BODY', 'Expected a JSON body.');
   }
   const parsedBody = BodySchema.safeParse(body);
-  if (!parsedBody.success) return jsonError(400, 'INVALID_BODY', 'Expected { "url": string }.');
+  if (!parsedBody.success)
+    return jsonError(
+      400,
+      'INVALID_BODY',
+      'Expected { "url": string, publishMode?: PATCH_ONLY | REVIEW_PR | AUTO_PR }.',
+    );
+  const user = await currentUser(req);
+  const wantsPublish = parsedBody.data.publishMode !== 'PATCH_ONLY';
+  if (wantsPublish) {
+    if (!config().github)
+      return jsonError(
+        503,
+        'GITHUB_NOT_CONFIGURED',
+        'Pull request publishing is not configured on this server.',
+      );
+    if (!sameOrigin(req)) return forbiddenOrigin();
+    if (!user) return jsonError(401, 'UNAUTHENTICATED', 'Connect GitHub to create pull requests.');
+  }
 
   const parsed = parseGitHubUrl(parsedBody.data.url);
   if (!parsed.ok) return jsonError(400, 'INVALID_URL', parsed.error);
@@ -59,12 +83,18 @@ export async function POST(req: NextRequest) {
     owner: parsed.repo.owner,
     name: parsed.repo.name,
     clientIp: ip,
+    ownerId: user?.id ?? null,
+    publishMode: parsedBody.data.publishMode,
+    allowPartialPublish: parsedBody.data.allowPartial,
+    allowForkPublish: parsedBody.data.allowFork,
   });
   return NextResponse.json({ id: job.id }, { status: 201 });
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const user = await currentUser(req);
   const jobs = await prisma.resurrection.findMany({
+    where: { OR: [{ ownerId: null }, ...(user ? [{ ownerId: user.id }] : [])] },
     orderBy: { createdAt: 'desc' },
     take: 12,
     select: {

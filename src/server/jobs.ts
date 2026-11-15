@@ -19,10 +19,28 @@ function json(v: unknown): Prisma.InputJsonValue | undefined {
 
 export async function createJob(
   db: PrismaClient,
-  input: { repoUrl: string; owner: string; name: string; clientIp: string | null },
+  input: {
+    repoUrl: string;
+    owner: string;
+    name: string;
+    clientIp: string | null;
+    ownerId?: string | null;
+    publishMode?: 'PATCH_ONLY' | 'REVIEW_PR' | 'AUTO_PR';
+    allowPartialPublish?: boolean;
+    allowForkPublish?: boolean;
+  },
 ) {
   return db.resurrection.create({
-    data: { repoUrl: input.repoUrl, owner: input.owner, name: input.name, clientIp: input.clientIp },
+    data: {
+      repoUrl: input.repoUrl,
+      owner: input.owner,
+      name: input.name,
+      clientIp: input.clientIp,
+      ownerId: input.ownerId ?? null,
+      publishMode: input.publishMode ?? 'PATCH_ONLY',
+      allowPartialPublish: input.allowPartialPublish ?? false,
+      allowForkPublish: input.allowForkPublish ?? false,
+    },
     select: { id: true },
   });
 }
@@ -92,6 +110,8 @@ export class PrismaJobReporter implements JobReporter {
       commitDate: f.commitDate,
       runtime: f.runtime,
       analysis: json(f.analysis),
+      ecosystem: f.ecosystem,
+      packageManager: f.packageManager,
       baseline: json(f.baseline),
       final: json(f.final),
       report: json(f.report),

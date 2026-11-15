@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Keep V2 spec in sync",
+      "trigger": "PostFileSave",
+      "description": "Reminds the agent to keep the V2 spec, README and UI ecosystem list in sync when ecosystem or publishing code changes. Cheap: no build is run.",
+      "matcher": "src[\\\\/]engine[\\\\/](publish|ecosystems)[\\\\/].*\\.ts$|src[\\\\/]server[\\\\/]github[\\\\/].*\\.ts$",
+      "action": {
+        "type": "agent",
+        "prompt": "A V2 ecosystem or publishing file changed. If behaviour changed, update .kiro/specs/reporevive-v2/{requirements,design,tasks}.md first (tick completed tasks, record new limits), and keep README.md \"Supported ecosystems\" and src/lib/ecosystems.ts consistent: an ecosystem is advertised only when its detector, runtime, plan, diagnoser, strategies and tests exist."
+      }
+    }
+  ]
+}

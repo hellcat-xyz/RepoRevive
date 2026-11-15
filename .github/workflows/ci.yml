@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Needed only so `prisma generate` and config parsing succeed; no database is contacted by these steps.
+      DATABASE_URL: postgresql://reporevive:reporevive@localhost:5432/reporevive
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run typecheck
+      - run: npm run lint
+      - name: Unit, pipeline and property-based tests
+        run: npm test
+      - name: Production build
+        run: npm run build
+
+  database:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: reporevive
+          POSTGRES_PASSWORD: reporevive
+          POSTGRES_DB: reporevive
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U reporevive" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://reporevive:reporevive@localhost:5432/reporevive?schema=public
+      REPOREVIVE_DB_TESTS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Apply every migration to an empty database
+        run: npx prisma migrate deploy
+      - name: Schema and migrations agree
+        run: npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --shadow-database-url "$DATABASE_URL" --exit-code
+      - name: Database integration tests
+        run: npx vitest run tests/integration/db.test.ts
+
+  docker:
+    # Real containers (ecosystem images are pulled). Opt-in via the path filter below to keep PR feedback fast.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+        env:
+          DATABASE_URL: postgresql://x:y@localhost:5432/z
+      - run: npm run test:docker
+        env:
+          DATABASE_URL: postgresql://x:y@localhost:5432/z

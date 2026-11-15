@@ -31,4 +31,8 @@ inclusion: always
 - LLM output is untrusted: validate schema, restrict edit paths to the workspace, forbid
   `node_modules`/`.git`, cap edit size, and verify like any other fix.
 - API routes are rate-limited per client IP and validate bodies with zod.
-- No push to GitHub. No credentials are given to cloned code.
+- GitHub write access exists only in src/engine/publish + src/server/github, runs on the host/worker (never in a sandbox), uses the
+  owner's own encrypted user token, and is gated by evaluatePublishPolicy. No credentials are given to cloned code or to the LLM.
+- Tokens: AES-256-GCM at rest (key from env, bound to the user id), never in logs, events, reports, PR text or API responses.
+  OAuth state is random, HMAC-bound to an HttpOnly cookie and single use; mutating routes also check Origin.
+- Sandbox images come only from engine/core/images.ts; env names containing TOKEN/SECRET/GITHUB_*/DATABASE_URL are refused.

@@ -1,4 +1,5 @@
 /** Ecosystem-agnostic domain types shared across the engine. */
+import type { RuntimeFamily } from './images';
 
 export const STEP_NAMES = ['install', 'build', 'test'] as const;
 export type StepName = (typeof STEP_NAMES)[number];
@@ -56,6 +57,15 @@ export type IssueKind =
   | 'dependency-api-change'
   | 'build-failure'
   | 'test-failure'
+  | 'dependency-conflict'
+  | 'toolchain-mismatch'
+  | 'unsupported-edition'
+  | 'removed-stdlib-api'
+  | 'legacy-syntax'
+  | 'import-path'
+  | 'missing-feature'
+  | 'build-script-failure'
+  | 'compile-error'
   | 'unknown';
 
 export type Severity = 'critical' | 'error' | 'warning' | 'info';
@@ -126,7 +136,11 @@ export interface AttemptRecord {
 }
 
 export interface RuntimeSelection {
-  /** Docker image tag, e.g. `node:16`. */
+  /** Runtime family; selects cache env and the image allow-list rule. */
+  family: RuntimeFamily;
+  /** Full toolchain version label, e.g. `3.11` (Python), `1.75` (Rust), `22` (Node). */
+  version: string;
+  /** Docker image tag, e.g. `node:16`. Must pass `isAllowedImage`. */
   image: string;
   /** Human label, e.g. `Node.js 16`. */
   label: string;

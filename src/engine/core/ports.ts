@@ -58,6 +58,13 @@ export interface LlmFixRequest {
   logExcerpt: string;
   files: { path: string; content: string }[];
   runtime: string;
+  /** Ecosystem context (all optional for older callers). */
+  ecosystem?: string;
+  packageManager?: string;
+  /** The failing command line as run in the sandbox. */
+  command?: string;
+  /** Earlier attempts in this job and how they ended, so the model does not repeat them. */
+  priorAttempts?: { title: string; status: string; reason?: string }[];
 }
 
 export interface LlmClient {

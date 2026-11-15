@@ -3,7 +3,10 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { useRouter } from 'next/navigation';
 import { useId, useMemo, useState } from 'react';
+import { SUPPORTED_ECOSYSTEMS } from '@/lib/ecosystems';
 import { parseGitHubUrl } from '@/lib/github';
+import { PublishOptions, type PublishChoice } from './PublishOptions';
+import { useGithub } from './useGithub';
 
 const EXAMPLES = [
   'https://github.com/request/request',
@@ -18,6 +21,14 @@ export function ResurrectForm() {
   const [touched, setTouched] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
+  const github = useGithub();
+  const [publish, setPublish] = useState<PublishChoice>({
+    mode: 'PATCH_ONLY',
+    allowFork: false,
+    allowPartial: false,
+  });
+  const needsGithub = publish.mode !== 'PATCH_ONLY';
+  const blocked = needsGithub && !github.status.connected;
 
   const parsed = useMemo(() => parseGitHubUrl(url), [url]);
   const clientError = touched && url.trim() && !parsed.ok ? parsed.error : null;
@@ -28,12 +39,21 @@ export function ResurrectForm() {
     setTouched(true);
     setServerError(null);
     if (!parsed.ok) return;
+    if (blocked) {
+      setServerError('Connect GitHub first, or choose Patch only.');
+      return;
+    }
     setSubmitting(true);
     try {
       const res = await fetch('/api/resurrections', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ url: parsed.repo.url }),
+        body: JSON.stringify({
+          url: parsed.repo.url,
+          publishMode: publish.mode,
+          allowFork: publish.allowFork,
+          allowPartial: publish.allowPartial,
+        }),
       });
       const body = (await res.json().catch(() => ({}))) as { id?: string; error?: { message?: string } };
       if (!res.ok || !body.id) throw new Error(body.error?.message ?? `Request failed (${res.status})`);
@@ -79,7 +99,7 @@ export function ResurrectForm() {
         </div>
         <motion.button
           type="submit"
-          disabled={submitting}
+          disabled={submitting || blocked}
           whileHover={{ scale: submitting ? 1 : 1.02 }}
           whileTap={{ scale: 0.98 }}
           className="relative inline-flex h-12 shrink-0 items-center justify-center gap-2 overflow-hidden rounded-xl bg-ecto-400 px-6 font-display text-[15px] font-semibold text-crypt-950 shadow-[0_0_30px_-5px_rgba(74,222,128,0.7)] transition-colors hover:bg-ecto-300 disabled:cursor-wait disabled:bg-ecto-500/70"
@@ -151,7 +171,7 @@ export function ResurrectForm() {
               exit={{ opacity: 0 }}
               className="flex flex-wrap items-center gap-2 text-zinc-500"
             >
-              <span>Public Node.js/npm repositories. Try</span>
+              <span>Public Node.js, Python or Rust repositories. Try</span>
               {EXAMPLES.map((ex) => (
                 <button
                   key={ex}
@@ -169,6 +189,28 @@ export function ResurrectForm() {
           )}
         </AnimatePresence>
       </div>
+      <PublishOptions
+        value={publish}
+        onChange={setPublish}
+        github={github.status}
+        onDisconnect={() => void github.disconnect()}
+      />
+
+      <ul
+        className="mt-4 flex flex-wrap items-center gap-2 text-xs text-zinc-400"
+        aria-label="Supported ecosystems"
+      >
+        {SUPPORTED_ECOSYSTEMS.map((e) => (
+          <li
+            key={e.id}
+            title={e.repairs}
+            className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1"
+          >
+            <span className="font-medium text-zinc-200">{e.name}</span>
+            <span className="text-zinc-500"> · {e.managers.join(', ')}</span>
+          </li>
+        ))}
+      </ul>
     </form>
   );
 }

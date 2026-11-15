@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { ResurrectionError } from '@/engine/core/errors';
+import { cacheEnvFor, imageFamily, isAllowedImage, isSafeEnvEntry } from '@/engine/core/images';
 import type { OutputListener, RunResult, RunSpec, Sandbox } from '@/engine/core/ports';
 
 export interface DockerSandboxOptions {
@@ -14,9 +15,6 @@ export interface DockerSandboxOptions {
   /** Max bytes of output kept for diagnosis. */
   maxOutputBytes?: number;
 }
-
-const IMAGE_RE = /^node:\d{1,2}$/;
-const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** Ring buffer of the last N bytes of output. */
 class OutputTail {
@@ -115,7 +113,7 @@ export class DockerSandbox implements Sandbox {
   }
 
   async ensureImage(image: string, onLine?: OutputListener): Promise<void> {
-    if (!IMAGE_RE.test(image)) throw new ResurrectionError('INTERNAL', `Refusing unexpected image ${image}`);
+    if (!isAllowedImage(image)) throw new ResurrectionError('INTERNAL', `Refusing unexpected image ${image}`);
     if (this.pulled.has(image)) return;
     const inspect = await this.exec(['image', 'inspect', '--format', '{{.Id}}', image]);
     if (inspect.code !== 0) {
@@ -128,7 +126,7 @@ export class DockerSandbox implements Sandbox {
   }
 
   buildRunArgs(spec: RunSpec, name: string): string[] {
-    if (!IMAGE_RE.test(spec.image))
+    if (!isAllowedImage(spec.image))
       throw new ResurrectionError('INTERNAL', `Refusing unexpected image ${spec.image}`);
     if (!path.isAbsolute(spec.workdir))
       throw new ResurrectionError('INTERNAL', 'Sandbox workdir must be absolute');
@@ -168,10 +166,12 @@ export class DockerSandbox implements Sandbox {
       'HOME=/tmp',
     ];
     if (spec.cacheDir) {
-      args.push('-v', `${spec.cacheDir}:/cache:rw`, '-e', 'npm_config_cache=/cache/npm');
+      args.push('-v', `${spec.cacheDir}:/cache:rw`);
+      for (const [k, v] of Object.entries(cacheEnvFor(imageFamily(spec.image)!)))
+        args.push('-e', `${k}=${v}`);
     }
     for (const [k, v] of Object.entries(spec.env ?? {})) {
-      if (!ENV_KEY_RE.test(k)) throw new ResurrectionError('INTERNAL', `Invalid env key ${k}`);
+      if (!isSafeEnvEntry(k, v)) throw new ResurrectionError('INTERNAL', `Refusing env key ${k}`);
       args.push('-e', `${k}=${v}`);
     }
     args.push('--entrypoint', '', spec.image, ...spec.command);

@@ -10,6 +10,7 @@ import type {
 } from './core/types';
 import { STEP_NAMES } from './core/types';
 import type { FileChange } from './core/workspace';
+import { type VerificationCoverage, computeCoverage } from './core/coverage';
 import { allStepsOk } from './core/verification';
 import type { ProjectAnalysis } from './ecosystems/types';
 import { DEP_SECTIONS, parseManifest } from './ecosystems/npm/manifest';
@@ -44,6 +45,8 @@ export interface ResurrectionReport {
   health: Health;
   headline: string;
   ecosystem: string | null;
+  /** What the final verification actually exercised. Absent in reports created before V2. */
+  coverage?: VerificationCoverage;
   runtime: { baseline: string | null; final: string | null };
   analysis: ProjectAnalysis | null;
   rootCauses: {
@@ -224,6 +227,7 @@ export function buildReport(input: BuildReportInput): ResurrectionReport {
       input.error,
     ),
     ecosystem: input.ecosystem,
+    coverage: computeCoverage(final),
     runtime: { baseline: baseline?.runtime ?? null, final: final?.runtime ?? null },
     analysis: input.analysis,
     rootCauses,
@@ -261,6 +265,13 @@ export function reportToMarkdown(r: ResurrectionReport): string {
     L.push(`| ${s} | ${cell(b)} | ${cell(f)} |`);
   }
   L.push('');
+  if (r.coverage) {
+    L.push(
+      `**Verification coverage:** ${r.coverage.level}${r.coverage.testedFunctionally ? '' : ' (not functionally tested)'}`,
+    );
+    for (const lim of r.coverage.limitations) L.push(`- ${lim}`);
+    L.push('');
+  }
 
   if (r.rootCauses.length) {
     L.push('## What killed it', '');

@@ -4,7 +4,7 @@ inclusion: always
 
 # Product: RepoRevive
 
-RepoRevive resurrects abandoned or broken public Node.js/npm GitHub repositories. A user pastes a
+RepoRevive resurrects abandoned or broken public GitHub repositories (Node.js, Python, Rust, Go, Maven). A user pastes a
 GitHub URL; the system clones it into a sandbox, records baseline failures, applies targeted fixes one
 at a time, keeps only fixes that verification supports, and produces a report plus a Git-compatible
 `.patch` file.
@@ -13,8 +13,9 @@ at a time, keeps only fixes that verification supports, and produces a report pl
 
 - Untrusted repository code (npm scripts, build, tests, git operations) runs only inside isolated,
   resource-limited Docker containers. Never on the application host.
-- Nothing is ever pushed to GitHub. There is no push code path. Any future push feature requires
-  explicit per-action user authorization and a separate spec.
+- Publishing to GitHub exists only as the V2 publication workflow (.kiro/specs/reporevive-v2): a privileged step outside the
+  sandbox, enabled per job by the signed-in owner (patch-only is the default), producing a **draft** PR from a new branch.
+  It never merges, approves, force-pushes, or touches the default branch. Any other push path needs its own spec.
 - Every change shown to the user is labelled as one of: verified (runtime), verified (static),
   reverted, or suggested (unverified). Users must never confuse a suggestion with a verified fix.
 - Minimal change principle: prefer config fixes over dependency changes, and pinning versions from

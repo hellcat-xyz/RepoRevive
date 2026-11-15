@@ -14,13 +14,14 @@ import type {
   Health,
   Issue,
   JobStatus,
+  RuntimeSelection,
   StageName,
   VerificationResult,
 } from './core/types';
 import { STEP_NAMES } from './core/types';
 import { computeHealth, decideAcceptance, summarizeSteps } from './core/verification';
 import { Workspace } from './core/workspace';
-import { detectEcosystem, ECOSYSTEMS } from './ecosystems';
+import { detectEcosystems, ECOSYSTEMS } from './ecosystems';
 import type { Ecosystem, FixStrategy, ProjectAnalysis, StrategyContext } from './ecosystems/types';
 import { ISSUE_EXPLANATIONS, SUGGESTION_ONLY } from './explanations';
 import { llmSourceFix } from './llm/llm-strategy';
@@ -46,6 +47,8 @@ export interface JobUpdate {
   commitDate?: Date;
   runtime?: string;
   analysis?: unknown;
+  ecosystem?: string;
+  packageManager?: string;
   baseline?: unknown;
   final?: unknown;
   report?: ResurrectionReport;
@@ -62,6 +65,8 @@ export interface JobReporter {
 export interface PipelineDeps {
   sandbox: Sandbox;
   registry: PackageRegistry;
+  /** Per-ecosystem registries (e.g. PyPI, crates.io); falls back to `registry`. */
+  registries?: Record<string, PackageRegistry>;
   llm: LlmClient | null;
   /** Optional read-only GitHub lookups used by strategies that repair broken upstream downloads. */
   upstream?: UpstreamResolver | null;
@@ -90,22 +95,8 @@ export interface PipelineOutcome {
   workspace: Workspace | null;
 }
 
-const SANDBOX_ENV = {
-  CI: 'true',
-  NODE_ENV: 'development',
-  npm_config_update_notifier: 'false',
-  npm_config_fund: 'false',
-  npm_config_audit: 'false',
-  npm_config_loglevel: 'warn',
-  ADBLOCK: '1',
-  DISABLE_OPENCOLLECTIVE: '1',
-  HUSKY: '0',
-  PUPPETEER_SKIP_DOWNLOAD: '1',
-  PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: '1',
-  CYPRESS_INSTALL_BINARY: '0',
-  BROWSERSLIST_IGNORE_OLD_DATA: '1',
-  FORCE_COLOR: '0',
-};
+/** Ecosystem-neutral base env for sandbox commands. Ecosystems add their own via `sandboxEnv`. */
+const SANDBOX_ENV: Record<string, string> = { CI: 'true', FORCE_COLOR: '0' };
 
 function sortIssues(issues: Issue[]): Issue[] {
   const stepOrder = (s: Issue['step']) => (s === 'static' ? 0 : STEP_NAMES.indexOf(s));
@@ -253,6 +244,7 @@ export class ResurrectionPipeline {
     baseline: VerificationResult,
     commitDate: string | null,
     cacheDir: string,
+    pm: string,
   ): Promise<VerificationResult> {
     let state = baseline;
     const tried = new Set<string>();
@@ -272,13 +264,20 @@ export class ResurrectionPipeline {
         ws,
         runtime,
         commitDate,
-        registry: this.deps.registry,
+        registry: this.deps.registries?.[eco.id] ?? this.deps.registry,
         upstream: this.deps.upstream ?? null,
         llm: this.deps.llm,
+        ecosystem: { id: eco.id, packageManager: pm },
+        attempts: this.attempts.map((a) => ({ title: a.title, status: a.status, reason: a.reason })),
         current: state,
         log: (m) => this.log(m, 'info', 'repair'),
         sandbox: {
-          regenerateLockfile: (edits) => this.regenerateLockfile(ws, eco, edits, runtime.image, cacheDir),
+          regenerateFiles: (edits) => this.regenerateFiles(ws, eco, edits, runtime, cacheDir),
+          regenerateLockfile: async (edits) => {
+            const files = await this.regenerateFiles(ws, eco, edits, runtime, cacheDir);
+            const lock = (await eco.lockfileRegeneration(ws))?.lockfile;
+            return files.find((f) => f.path === lock) ?? null;
+          },
         },
       };
 
@@ -440,44 +439,56 @@ export class ResurrectionPipeline {
     return prev;
   }
 
-  private async regenerateLockfile(
+  /**
+   * Run the ecosystem's lockfile command with `edits` applied, return every regenerated file that changed
+   * (the lockfile and any `extraFiles`), then restore the workspace. The caller decides what to keep.
+   */
+  private async regenerateFiles(
     ws: Workspace,
     eco: Ecosystem,
     edits: FileEdit[],
-    image: string,
+    runtimeSel: RuntimeSelection,
     cacheDir: string,
-  ): Promise<FileEdit | null> {
+  ): Promise<FileEdit[]> {
     const regen = await eco.lockfileRegeneration(ws);
-    if (!regen) return null;
-    const currentLock = await ws.current(regen.lockfile);
-    // Track the lockfile in the snapshot so rollback restores it even if it was untouched so far.
-    const snapshot = await ws.applyEdits([...edits, { path: regen.lockfile, content: currentLock }]);
+    if (!regen) return [];
+    const paths = [regen.lockfile, ...(regen.extraFiles ?? [])];
+    const before = new Map<string, string | null>();
+    for (const p of paths) before.set(p, await ws.current(p));
+    // Track the files in the snapshot so rollback restores them even if they were untouched so far.
+    const snapshot = await ws.applyEdits([
+      ...edits,
+      ...paths.map((p) => ({ path: p, content: before.get(p) ?? null })),
+    ]);
     try {
       this.log(`$ ${regen.command.join(' ')}`, 'info', 'lockfile');
       const res = await this.deps.sandbox.run(
         {
-          image,
+          image: runtimeSel.image,
           command: regen.command,
           workdir: ws.root,
           cacheDir,
           network: 'bridge',
           timeoutMs: this.config.timeouts.install,
-          env: SANDBOX_ENV,
+          env: { ...SANDBOX_ENV, ...eco.sandboxEnv(runtimeSel) },
           label: 'lockfile',
         },
         (l) => this.log(l, 'debug', 'lockfile'),
       );
       if (res.exitCode !== 0 || res.timedOut) {
         this.log('Lockfile regeneration failed; skipping this proposal.', 'warn', 'lockfile');
-        return null;
+        return [];
       }
-      const content = await ws.read(regen.lockfile);
-      return content !== null && content !== currentLock ? { path: regen.lockfile, content } : null;
+      const out: FileEdit[] = [];
+      for (const p of paths) {
+        const content = await ws.read(p);
+        if (content !== null && content !== before.get(p)) out.push({ path: p, content });
+      }
+      return out;
     } finally {
       await ws.rollback(snapshot);
     }
   }
-
   private async staticCiFixes(
     ws: Workspace,
     analysis: ProjectAnalysis,
@@ -560,15 +571,32 @@ export class ResurrectionPipeline {
       await this.setStatus('ANALYZING', 'Examining the remains');
       await this.stage('analyze', 'Inspecting manifest, lockfiles, scripts, and workflows');
       ws = await Workspace.open(repoDir);
-      eco = await detectEcosystem(ws, this.deps.ecosystems ?? ECOSYSTEMS);
+      const registered = this.deps.ecosystems ?? ECOSYSTEMS;
+      const detected = await detectEcosystems(ws, registered);
+      eco = detected.selected?.ecosystem ?? null;
       if (!eco)
         throw new ResurrectionError(
           'NOT_A_NODE_PROJECT',
-          'No package.json at the repository root. Only Node.js/npm projects are supported.',
+          `No supported project found at the repository root. Supported: ${registered.map((e) => e.displayName).join(', ')}.`,
         );
+      if (detected.ambiguous) {
+        const names = detected.candidates
+          .map(
+            (c) =>
+              `${c.ecosystem.displayName} (${c.detection.confidence.toFixed(2)}: ${c.detection.evidence.join(', ')})`,
+          )
+          .join('; ');
+        const msg = `Ambiguous ecosystem detection; using ${eco.displayName}. Candidates: ${names}.`;
+        warnings.push(msg);
+        this.log(msg, 'warn', 'analyze');
+      }
       analysis = await eco.analyze(ws);
       warnings.push(...analysis.warnings);
-      await this.deps.reporter.update({ analysis });
+      await this.deps.reporter.update({
+        analysis,
+        ecosystem: eco.id,
+        packageManager: analysis.packageManager,
+      });
       this.log(
         `${eco.displayName} project${analysis.projectName ? ` "${analysis.projectName}"` : ''}: ${analysis.dependencies.length} dependencies, ` +
           `lockfile: ${analysis.lockfiles.join(', ') || 'none'}, build: ${analysis.hasBuild ? 'yes' : 'no'}, tests: ${analysis.hasTests ? (analysis.testFramework ?? 'yes') : 'none'}`,
@@ -620,7 +648,15 @@ export class ResurrectionPipeline {
       if (baseline.issues.length > 0) {
         await this.setStatus('REPAIRING', 'Attempting resurrection');
         await this.stage('repair', 'Applying fixes one at a time, verifying each');
-        state = await this.repairLoop(ws, eco, verifier, baseline, commit.date, cacheDir);
+        state = await this.repairLoop(
+          ws,
+          eco,
+          verifier,
+          baseline,
+          commit.date,
+          cacheDir,
+          analysis.packageManager,
+        );
         const count = (s: string) => this.attempts.filter((a) => a.status === s).length;
         this.log(
           `Repair stage finished: ${count('VERIFIED')} verified, ${count('REVERTED')} reverted, ${count('ERROR')} errored, ${count('SUGGESTED')} suggested (unverified).`,
@@ -631,7 +667,9 @@ export class ResurrectionPipeline {
 
       await this.checkCancelled();
       const finalRuntime = await verifier.runtime();
-      staticIssues = await this.staticCiFixes(ws, analysis, finalRuntime.major);
+      staticIssues = eco.supportsCiModernize
+        ? await this.staticCiFixes(ws, analysis, finalRuntime.major)
+        : [];
 
       if (this.sm.status !== 'VERIFYING') await this.setStatus('VERIFYING', 'Final verification');
       await this.stage('finalize', 'Clean reinstall and final verification');
