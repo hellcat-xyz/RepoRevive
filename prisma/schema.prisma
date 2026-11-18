@@ -115,6 +115,8 @@ model RepairAttempt {
   id             String        @id @default(cuid())
   resurrectionId String
   seq            Int
+  /// Project folder in multi-project jobs (e.g. client). Null for the root project and historic jobs.
+  project        String?
   issueKind      String
   fingerprint    String
   strategyId     String

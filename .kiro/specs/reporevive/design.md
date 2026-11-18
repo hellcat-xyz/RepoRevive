@@ -246,6 +246,6 @@ It then flows through normal verification.
 ## 14. Error handling
 
 `ResurrectionError(code, message)` codes: `INVALID_URL`, `REPO_NOT_FOUND_OR_PRIVATE`,
-`REPO_TOO_LARGE`, `CLONE_FAILED`, `NETWORK_ERROR`, `NOT_A_NODE_PROJECT`, `DOCKER_UNAVAILABLE`,
+`REPO_TOO_LARGE`, `CLONE_FAILED`, `NETWORK_ERROR`, `NO_SUPPORTED_PROJECT`, `DOCKER_UNAVAILABLE`,
 `JOB_TIMEOUT`, `WORKER_INTERRUPTED`, `INTERNAL`. Strategy exceptions are recorded as attempt `ERROR`
 and never abort the job.

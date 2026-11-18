@@ -131,6 +131,7 @@ export class PrismaJobReporter implements JobReporter {
       data: {
         resurrectionId: this.jobId,
         seq: a.seq,
+        project: a.project ?? null,
         issueKind: a.issueKind,
         fingerprint: a.fingerprint,
         strategyId: a.strategyId,

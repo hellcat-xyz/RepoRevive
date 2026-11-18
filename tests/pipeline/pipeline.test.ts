@@ -249,11 +249,11 @@ describe('ResurrectionPipeline (FakeSandbox world model)', () => {
     expect(reportToMarkdown(outcome.report)).toContain('no longer available on the npm registry');
   });
 
-  it('completes as unrecoverable for non-Node repositories', async () => {
+  it('completes as unrecoverable for repositories with no supported project', async () => {
     const { outcome, reporter } = await resurrect({ 'README.md': '# not node' }, world({}));
     expect(outcome.status).toBe('COMPLETED');
     expect(outcome.health).toBe('UNRECOVERABLE');
-    expect(outcome.report.error?.code).toBe('NOT_A_NODE_PROJECT');
+    expect(outcome.report.error?.code).toBe('NO_SUPPORTED_PROJECT');
     expect(reporter.statuses).toEqual(['CLONING', 'ANALYZING', 'REPORTING', 'COMPLETED']);
   });
 

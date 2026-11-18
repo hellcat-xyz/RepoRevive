@@ -41,6 +41,19 @@ export function AttemptCard({ attempt }: { attempt: AttemptRecord }) {
             >
               {meta.label}
             </span>
+            {attempt.strategyId === 'llm-source-fix' && (
+              <span
+                className="rounded bg-spirit-400/15 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-spirit-300"
+                title="Proposed by an AI model; kept only if sandbox verification supported it."
+              >
+                AI
+              </span>
+            )}
+            {attempt.project && (
+              <span className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-zinc-300">
+                {attempt.project}
+              </span>
+            )}
             <span className="font-medium text-zinc-100">{attempt.title}</span>
           </span>
           {attempt.reason && <span className="mt-1 block text-sm text-zinc-400">{attempt.reason}</span>}

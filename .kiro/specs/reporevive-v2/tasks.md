@@ -61,3 +61,8 @@ not executed (opt-in tests exist). `[ ]` not done.
 
 - [x] 9.1 CI workflow; 9.2 README, `.env.example`; 9.3 tests, typecheck, lint, prettier, `next build`
 - [ ] 9.4 Run the opt-in Docker and live GitHub tests (needs Docker and a test repository)
+
+## Phase 10: Static sites and multi-project repositories
+
+- [x] 10.1 Multi-project repositories (MERN, monorepo folders): see `.kiro/specs/reporevive-monorepo`
+- [x] 10.2 Static site ecosystem: references scan, case-fix strategy, `VERIFIED_STATIC` labelling, tests, README and UI chip

@@ -100,3 +100,24 @@ verification panel, PR panel with "View Pull Request". All controls call real en
 Vitest + fast-check. Properties: image allowlist, ecosystem isolation, path safety, publication state
 machine, idempotent retries, no publish without authorization, published tree equals accepted edits,
 failed repair never labelled verified. Docker and live GitHub tests are opt-in.
+
+## R8 Static sites (HTML/CSS/JS without a build system)
+
+1. Detection: `index.html` (or any `*.html`) at a project root, confidence 0.5 / 0.4. It is a fallback: any
+   ecosystem with a manifest wins. In sub-folder discovery it applies only to conventional folder names
+   (`client`, `frontend`, `web`, ...), never to `public/` or `docs/`.
+2. Nothing is installed, built or run. All three steps are `skipped` with `not-applicable`, and the report says
+   so (coverage level `none`, "nothing was executed").
+3. The only check is a read-only scan of local references in HTML (`src`, `href`, `poster` on script, link,
+   img, source, video, audio, iframe, a, ...) and CSS (`url()`, `@import`). References are checked
+   case-exactly, because Linux hosts and GitHub Pages are case-sensitive.
+4. Issue kind `broken-reference` (step `static`). The only automatic fix rewrites a reference to the existing
+   file whose name differs only by letter case. Nothing is created, deleted or guessed.
+5. Accepted fixes are labelled `VERIFIED_STATIC`, never `VERIFIED`. Health is `REVIVED` only when no broken
+   reference remains; fewer than before is `PARTIALLY_REVIVED`.
+6. Limits: JavaScript syntax and behaviour are not checked; references built by scripts, templating
+   placeholders, `<base href>` pages and URLs outside the repository are skipped.
+
+## R9 Pull request content
+
+1. When a kept fix came from the AI strategy, the PR body lists it under "AI-assisted changes" with its files and a review notice (see .kiro/specs/reporevive-llm-source-fixes).

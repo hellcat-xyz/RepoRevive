@@ -76,7 +76,17 @@ export interface StrategyContext {
   /** Ecosystem this job is running; strategies and prompts must not cross ecosystems. */
   ecosystem?: { id: string; packageManager: string };
   /** Attempts recorded so far in this job. */
-  attempts?: { title: string; status: string; reason?: string }[];
+  attempts?: {
+    title: string;
+    status: string;
+    reason?: string;
+    fingerprint?: string;
+    strategyId?: string;
+    /** Tail of the first failing step after a reverted attempt, so a model can see what the change did. */
+    detail?: string;
+  }[];
+  /** Most AI proposals offered for one issue (config LLM_MAX_ATTEMPTS_PER_ISSUE). */
+  llmMaxPerIssue?: number;
   current: VerificationResult;
   log: (message: string) => void;
 }
@@ -114,6 +124,14 @@ export interface Ecosystem {
   sandboxEnv(runtime: RuntimeSelection): Record<string, string>;
   /** Whether Node-specific GitHub Actions modernisation applies. */
   supportsCiModernize: boolean;
+  /**
+   * Last-resort ecosystem: only considered at the repository root or in conventional folders
+   * (client, web, ...), and always loses to an ecosystem with a manifest.
+   */
+  fallback?: boolean;
+  /** static when nothing is executed and fixes can only be verified statically. Default 
+untime. */
+  verification?: 'runtime' | 'static';
   analyze(ws: Workspace): Promise<ProjectAnalysis>;
   selectRuntime(ws: Workspace): Promise<RuntimeSelection>;
   plan(ws: Workspace, runtime: RuntimeSelection, timeouts: Record<StepName, number>): Promise<StepPlan[]>;

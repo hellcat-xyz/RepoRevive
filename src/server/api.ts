@@ -18,6 +18,7 @@ const MAX_DIFF_CHARS = 200_000;
 export function toAttempt(a: RepairAttempt): AttemptRecord {
   return {
     seq: a.seq,
+    ...(a.project ? { project: a.project } : {}),
     issueKind: a.issueKind as AttemptRecord['issueKind'],
     fingerprint: a.fingerprint,
     strategyId: a.strategyId,

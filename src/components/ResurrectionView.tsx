@@ -11,6 +11,7 @@ import { EcgMonitor } from './EcgMonitor';
 import { EcosystemPanel } from './EcosystemPanel';
 import { GraveyardScene } from './GraveyardScene';
 import { HealthBadge } from './HealthBadge';
+import { ProjectsPanel } from './ProjectsPanel';
 import { PublicationPanel } from './PublicationPanel';
 import { StageTimeline } from './StageTimeline';
 import { Terminal } from './Terminal';
@@ -19,6 +20,7 @@ import { useResurrection } from './useResurrection';
 export function ResurrectionView({ id }: { id: string }) {
   const r = useResurrection(id);
   const [cancelling, setCancelling] = useState(false);
+  const [projectFilter, setProjectFilter] = useState<string | null>(null);
   const snap = r.snapshot;
 
   if (r.error) {
@@ -35,7 +37,11 @@ export function ResurrectionView({ id }: { id: string }) {
 
   const failed = r.status === 'FAILED' || r.status === 'CANCELLED';
   const queued = r.status === 'QUEUED';
-  const sorted = [...r.attempts].sort((a, b) => b.seq - a.seq);
+  const attemptProjects = [...new Set(r.attempts.map((a) => a.project ?? ''))].sort();
+  const multiProject = attemptProjects.length > 1;
+  const sorted = r.attempts
+    .filter((a) => projectFilter === null || (a.project ?? '') === projectFilter)
+    .sort((a, b) => b.seq - a.seq);
 
   return (
     <div className="relative min-h-screen">
@@ -127,6 +133,7 @@ export function ResurrectionView({ id }: { id: string }) {
         </motion.div>
 
         {snap && <EcosystemPanel snap={snap} />}
+        {snap?.report?.projects && <ProjectsPanel projects={snap.report.projects} />}
 
         {/* live */}
         <div className="mt-6 grid gap-5 lg:grid-cols-5">
@@ -154,6 +161,29 @@ export function ResurrectionView({ id }: { id: string }) {
                 </span>
               ))}
             </div>
+            {multiProject && (
+              <div
+                className="mb-3 flex flex-wrap gap-1.5"
+                role="group"
+                aria-label="Filter repair attempts by project"
+              >
+                {[null, ...attemptProjects].map((p) => (
+                  <button
+                    key={p ?? 'all'}
+                    type="button"
+                    aria-pressed={projectFilter === p}
+                    onClick={() => setProjectFilter(p)}
+                    className={`rounded-full px-2 py-0.5 font-mono text-[10px] tracking-wider ring-1 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-spirit-400 ${
+                      projectFilter === p
+                        ? 'bg-ecto-400/15 text-ecto-300 ring-ecto-400/40'
+                        : 'text-zinc-400 ring-white/10 hover:text-zinc-200'
+                    }`}
+                  >
+                    {p === null ? 'all projects' : p === '' ? '(root)' : p}
+                  </button>
+                ))}
+              </div>
+            )}
             <ul className="-mr-2 flex-1 space-y-2.5 overflow-y-auto pr-2">
               {sorted.length === 0 && (
                 <li className="text-sm text-zinc-600">

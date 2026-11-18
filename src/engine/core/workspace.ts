@@ -64,6 +64,15 @@ export class Workspace {
     return new Workspace(real);
   }
 
+  /**
+   * Open a sub-folder of `parent` as its own workspace (for multi-project repositories).
+   * The folder goes through the same path validation and symlink checks as any other access.
+   */
+  static async openSub(parent: Workspace, folder: string): Promise<Workspace> {
+    const abs = await parent.resolve(folder);
+    return Workspace.open(abs);
+  }
+
   /** Resolve to an absolute host path, refusing symlinks on any existing component. */
   async resolve(rel: string): Promise<string> {
     const segments = validateRelativePath(rel);

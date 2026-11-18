@@ -64,7 +64,9 @@ export interface LlmFixRequest {
   /** The failing command line as run in the sandbox. */
   command?: string;
   /** Earlier attempts in this job and how they ended, so the model does not repeat them. */
-  priorAttempts?: { title: string; status: string; reason?: string }[];
+  priorAttempts?: { title: string; status: string; reason?: string; detail?: string }[];
+  /** Repository paths (bounded) so the model knows the project layout. */
+  tree?: string[];
 }
 
 export interface LlmClient {

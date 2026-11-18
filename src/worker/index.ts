@@ -77,6 +77,8 @@ async function runJob(jobId: string): Promise<void> {
     },
     {
       maxAttempts: cfg.maxAttempts,
+      maxProjects: cfg.maxProjects,
+      llmMaxPerIssue: cfg.llmMaxPerIssue,
       jobTimeoutMs: cfg.jobTimeoutMs,
       cloneTimeoutMs: cfg.cloneTimeoutMs,
       timeouts: cfg.timeouts,

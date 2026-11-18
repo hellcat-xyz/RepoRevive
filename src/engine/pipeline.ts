@@ -1,10 +1,20 @@
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { RepoRef } from '@/lib/github';
 import { analyzeWorkflow, isValidYaml } from './ci/github-actions';
 import { ResurrectionError, toResurrectionError } from './core/errors';
 import { createGitPatch } from './core/patch';
-import type { Clock, EventSink, LlmClient, PackageRegistry, Sandbox, UpstreamResolver } from './core/ports';
+import { aggregateHealth, prefixPath } from './core/projects';
+import type {
+  Clock,
+  EventSink,
+  LlmClient,
+  PackageRegistry,
+  PipelineEvent,
+  Sandbox,
+  UpstreamResolver,
+} from './core/ports';
 import { systemClock } from './core/ports';
 import { healthForStatus, JobStateMachine } from './core/state';
 import type {
@@ -19,13 +29,19 @@ import type {
   VerificationResult,
 } from './core/types';
 import { STEP_NAMES } from './core/types';
-import { computeHealth, decideAcceptance, summarizeSteps } from './core/verification';
-import { Workspace } from './core/workspace';
-import { detectEcosystems, ECOSYSTEMS } from './ecosystems';
+import { computeHealth, computeStaticHealth, decideAcceptance, summarizeSteps } from './core/verification';
+import { type FileChange, Workspace } from './core/workspace';
+import { discoverProjects, ECOSYSTEMS } from './ecosystems';
+import { listWorkflows } from './ecosystems/shared';
 import type { Ecosystem, FixStrategy, ProjectAnalysis, StrategyContext } from './ecosystems/types';
 import { ISSUE_EXPLANATIONS, SUGGESTION_ONLY } from './explanations';
 import { llmSourceFix } from './llm/llm-strategy';
-import { buildReport, type ResurrectionReport, summarizeVerification } from './report';
+import {
+  buildReport,
+  type ReportProjectInput,
+  type ResurrectionReport,
+  summarizeVerification,
+} from './report';
 import { Verifier } from './verifier';
 
 export const CLONE_IMAGE = 'node:22';
@@ -36,6 +52,10 @@ export interface PipelineConfig {
   cloneTimeoutMs: number;
   timeouts: { install: number; build: number; test: number };
   networkForBuild: boolean;
+  /** Maximum number of projects verified in one multi-project repository. Defaults to 4. */
+  maxProjects?: number;
+  /** Most AI proposals offered for one issue. Defaults to 3. */
+  llmMaxPerIssue?: number;
 }
 
 export interface JobUpdate {
@@ -98,6 +118,52 @@ export interface PipelineOutcome {
 /** Ecosystem-neutral base env for sandbox commands. Ecosystems add their own via `sandboxEnv`. */
 const SANDBOX_ENV: Record<string, string> = { CI: 'true', FORCE_COLOR: '0' };
 
+/** Errors that stop the whole job even when other projects could continue. */
+const JOB_FATAL_CODES: ReadonlySet<string> = new Set(['CANCELLED', 'DOCKER_UNAVAILABLE', 'JOB_TIMEOUT']);
+
+/** One project (the root, or a sub-folder) being resurrected inside a job. */
+interface ProjectRun {
+  /** Folder relative to the repository root; empty for the root project. */
+  folder: string;
+  ws: Workspace;
+  eco: Ecosystem;
+  analysis: ProjectAnalysis | null;
+  verifier: Verifier | null;
+  baseline: VerificationResult | null;
+  state: VerificationResult | null;
+  final: VerificationResult | null;
+  error: ResurrectionError | null;
+  notRun?: string;
+}
+
+/** Tags log lines from a project's verifier with its folder so the Terminal shows which project ran. */
+class ProjectSink implements EventSink {
+  constructor(
+    private readonly inner: EventSink,
+    private readonly folder: string,
+  ) {}
+  emit(event: PipelineEvent): void {
+    this.inner.emit(
+      event.type === 'log' && this.folder
+        ? { ...event, message: `[${this.folder}] ${event.message}` }
+        : event,
+    );
+  }
+}
+
+/** Stable identity of a proposal's edits, so a re-worded but identical proposal is not tried twice. */
+export function editsKey(edits: FileEdit[]): string {
+  const h = createHash('sha256');
+  for (const e of [...edits].sort((a, b) => a.path.localeCompare(b.path)))
+    h.update(`${e.path}\0${e.content === null ? '<delete>' : e.content}\0`);
+  return h.digest('hex');
+}
+
+function meanScore(values: (number | undefined)[]): number {
+  const v = values.filter((x): x is number => typeof x === 'number');
+  return v.length ? Math.round(v.reduce((a, b) => a + b, 0) / v.length) : 0;
+}
+
 function sortIssues(issues: Issue[]): Issue[] {
   const stepOrder = (s: Issue['step']) => (s === 'static' ? 0 : STEP_NAMES.indexOf(s));
   const sev = { critical: 0, error: 1, warning: 2, info: 3 } as const;
@@ -112,6 +178,10 @@ export class ResurrectionPipeline {
   private readonly attempts: AttemptRecord[] = [];
   private readonly startedAt: number;
   private heartbeat = 0;
+  /** Folder of the project currently being processed ("" for the root project or job-level work). */
+  private folder = '';
+  /** Outcome detail of reverted attempts by seq, shown to the AI strategy on the next try. */
+  private readonly attemptDetail = new Map<number, string>();
 
   constructor(
     private readonly deps: PipelineDeps,
@@ -128,7 +198,12 @@ export class ResurrectionPipeline {
     level: 'info' | 'warn' | 'error' | 'success' | 'debug' = 'info',
     source = 'engine',
   ) {
-    this.deps.sink.emit({ type: 'log', level, message, source });
+    this.deps.sink.emit({
+      type: 'log',
+      level,
+      message: this.folder ? `[${this.folder}] ${message}` : message,
+      source,
+    });
   }
 
   private async setStatus(status: JobStatus, message: string, extra: JobUpdate = {}) {
@@ -160,7 +235,11 @@ export class ResurrectionPipeline {
   }
 
   private async recordAttempt(a: Omit<AttemptRecord, 'seq'>): Promise<AttemptRecord> {
-    const attempt: AttemptRecord = { ...a, seq: this.attempts.length + 1 };
+    const attempt: AttemptRecord = {
+      ...a,
+      seq: this.attempts.length + 1,
+      ...(this.folder ? { project: this.folder, files: a.files.map((f) => prefixPath(this.folder, f)) } : {}),
+    };
     this.attempts.push(attempt);
     await this.deps.reporter.saveAttempt(attempt);
     this.deps.sink.emit({ type: 'attempt', attempt, message: `${attempt.status}: ${attempt.title}` });
@@ -268,7 +347,17 @@ export class ResurrectionPipeline {
         upstream: this.deps.upstream ?? null,
         llm: this.deps.llm,
         ecosystem: { id: eco.id, packageManager: pm },
-        attempts: this.attempts.map((a) => ({ title: a.title, status: a.status, reason: a.reason })),
+        attempts: this.attempts
+          .filter((a) => (a.project ?? '') === this.folder)
+          .map((a) => ({
+            title: a.title,
+            status: a.status,
+            reason: a.reason,
+            fingerprint: a.fingerprint,
+            strategyId: a.strategyId,
+            detail: this.attemptDetail.get(a.seq),
+          })),
+        llmMaxPerIssue: this.config.llmMaxPerIssue,
         current: state,
         log: (m) => this.log(m, 'info', 'repair'),
         sandbox: {
@@ -325,7 +414,10 @@ export class ResurrectionPipeline {
             continue;
           }
           const fresh = proposals.filter(
-            (p) => p.edits.length > 0 && !tried.has(`${issue.fingerprint}::${strategy.id}::${p.title}`),
+            (p) =>
+              p.edits.length > 0 &&
+              !tried.has(`${issue.fingerprint}::${strategy.id}::${p.title}`) &&
+              !tried.has(`${issue.fingerprint}::edits::${editsKey(p.edits)}`),
           );
           considered.push(
             `${strategy.id}: ${fresh.length ? `${fresh.length} candidate(s)` : 'nothing to try'}`,
@@ -333,6 +425,7 @@ export class ResurrectionPipeline {
           const proposal = fresh[0];
           if (proposal) {
             tried.add(`${issue.fingerprint}::${strategy.id}::${proposal.title}`);
+            tried.add(`${issue.fingerprint}::edits::${editsKey(proposal.edits)}`);
             this.log(`Investigating: ${issue.title}. Consulted ${considered.join('; ')}.`, 'info', 'repair');
             pick = { issue, proposal };
             break outer;
@@ -358,7 +451,12 @@ export class ResurrectionPipeline {
     for (const issue of state.issues) {
       if (
         !suggested.has(issue.fingerprint) &&
-        !this.attempts.some((a) => a.fingerprint === issue.fingerprint && a.status === 'VERIFIED')
+        !this.attempts.some(
+          (a) =>
+            a.fingerprint === issue.fingerprint &&
+            (a.project ?? '') === this.folder &&
+            (a.status === 'VERIFIED' || a.status === 'VERIFIED_STATIC'),
+        )
       ) {
         suggested.add(issue.fingerprint);
         await this.suggest(issue);
@@ -396,7 +494,11 @@ export class ResurrectionPipeline {
     );
     const snapshot = await ws.applyEdits(proposal.edits);
     const diff = createGitPatch(
-      beforeContents.map((b, i) => ({ path: b.path, before: b.before, after: proposal.edits[i]!.content })),
+      beforeContents.map((b, i) => ({
+        path: prefixPath(this.folder, b.path),
+        before: b.before,
+        after: proposal.edits[i]!.content,
+      })),
     );
     this.log(
       `Candidate patch applied in the sandbox workspace: ${proposal.edits.map((e) => e.path).join(', ')}`,
@@ -429,13 +531,27 @@ export class ResurrectionPipeline {
       reason: decision.reason,
     };
     if (decision.accept) {
-      this.log(`Fix verified and kept: ${proposal.title}. ${decision.reason}`, 'success', 'repair');
-      await this.recordAttempt({ ...base, status: 'VERIFIED' });
+      // A fix that was only checked statically (nothing was executed) must never read as runtime-verified.
+      const staticOnly = proposal.kind === 'static';
+      const reason = staticOnly
+        ? `Statically verified: the targeted issue is gone and nothing that passed before regressed. The project was not executed. ${decision.reason}`
+        : decision.reason;
+      this.log(`Fix verified and kept: ${proposal.title}. ${reason}`, 'success', 'repair');
+      await this.recordAttempt({ ...base, reason, status: staticOnly ? 'VERIFIED_STATIC' : 'VERIFIED' });
       return next;
     }
     await ws.rollback(snapshot);
     this.log(`Fix reverted: ${proposal.title}. ${decision.reason}`, 'warn', 'repair');
-    await this.recordAttempt({ ...base, status: 'REVERTED' });
+    const failing = STEP_NAMES.find(
+      (s) => next.steps[s].status === 'failed' || next.steps[s].status === 'timeout',
+    );
+    const reverted = await this.recordAttempt({ ...base, status: 'REVERTED' });
+    this.attemptDetail.set(
+      reverted.seq,
+      failing
+        ? `After this change ${failing} ${next.steps[failing].status}:\n${next.steps[failing].logTail.slice(-1500)}`
+        : decision.reason,
+    );
     return prev;
   }
 
@@ -489,13 +605,9 @@ export class ResurrectionPipeline {
       await ws.rollback(snapshot);
     }
   }
-  private async staticCiFixes(
-    ws: Workspace,
-    analysis: ProjectAnalysis,
-    targetMajor: number,
-  ): Promise<Issue[]> {
+  private async staticCiFixes(ws: Workspace, workflows: string[], targetMajor: number): Promise<Issue[]> {
     const issues: Issue[] = [];
-    for (const wf of analysis.workflows) {
+    for (const wf of workflows) {
       const text = await ws.current(wf).catch(() => null);
       if (text === null) continue;
       const res = analyzeWorkflow(text, targetMajor);
@@ -541,14 +653,35 @@ export class ResurrectionPipeline {
     const repoDir = path.join(input.jobDir, 'repo');
     const cacheDir = path.join(input.jobDir, 'cache');
     let ws: Workspace | null = null;
-    let eco: Ecosystem | null = null;
-    let analysis: ProjectAnalysis | null = null;
-    let baseline: VerificationResult | null = null;
-    let final: VerificationResult | null = null;
+    let runs: ProjectRun[] = [];
+    let notRunProjects: { folder: string; ecosystem: string; reason: string }[] = [];
     let staticIssues: Issue[] = [];
     let commit: { sha: string; date: string | null } | null = null;
     let warnings: string[] = [];
     let error: ResurrectionError | null = null;
+
+    /**
+     * Run `fn` for every project that is still active. With several projects an error ends only that
+     * project (the others continue); job-fatal errors and single-project jobs rethrow as before.
+     */
+    const phase = async (fn: (run: ProjectRun) => Promise<void>): Promise<void> => {
+      const isolate = runs.length > 1;
+      for (const run of runs) {
+        if (run.notRun || run.error) continue;
+        this.folder = run.folder;
+        try {
+          await this.checkCancelled();
+          await fn(run);
+        } catch (err) {
+          const e = toResurrectionError(err);
+          if (!isolate || JOB_FATAL_CODES.has(e.code)) throw err;
+          run.error = e;
+          this.log(`${e.code}: ${e.message}. Continuing with the other projects.`, 'error', 'engine');
+        } finally {
+          this.folder = '';
+        }
+      }
+    };
 
     try {
       await fs.mkdir(repoDir, { recursive: true });
@@ -566,129 +699,257 @@ export class ResurrectionPipeline {
         commitSha: commit.sha,
         commitDate: commit.date ? new Date(commit.date) : undefined,
       });
+      const commitDate = commit.date;
 
       await this.checkCancelled();
       await this.setStatus('ANALYZING', 'Examining the remains');
       await this.stage('analyze', 'Inspecting manifest, lockfiles, scripts, and workflows');
       ws = await Workspace.open(repoDir);
       const registered = this.deps.ecosystems ?? ECOSYSTEMS;
-      const detected = await detectEcosystems(ws, registered);
-      eco = detected.selected?.ecosystem ?? null;
-      if (!eco)
+      const discovery = await discoverProjects(ws, registered, { maxProjects: this.config.maxProjects });
+      if (discovery.projects.length === 0)
         throw new ResurrectionError(
-          'NOT_A_NODE_PROJECT',
-          `No supported project found at the repository root. Supported: ${registered.map((e) => e.displayName).join(', ')}.`,
+          'NO_SUPPORTED_PROJECT',
+          `No supported project found at the repository root or in its sub-folders. Supported: ${registered.map((e) => e.displayName).join(', ')}.`,
         );
-      if (detected.ambiguous) {
-        const names = detected.candidates
+      notRunProjects = discovery.notRun;
+      runs = discovery.projects.map((p) => ({
+        folder: p.folder,
+        ws: p.ws,
+        eco: p.ecosystem,
+        analysis: null,
+        verifier: null,
+        baseline: null,
+        state: null,
+        final: null,
+        error: null,
+      }));
+      for (const w of discovery.warnings) {
+        warnings.push(w);
+        this.log(w, 'warn', 'analyze');
+      }
+      for (const n of notRunProjects) {
+        const msg = `${n.folder || '(root)'}: ${n.reason}`;
+        warnings.push(msg);
+        this.log(msg, 'warn', 'analyze');
+      }
+      for (const p of discovery.projects) {
+        if (!p.detection.ambiguous) continue;
+        const names = p.detection.candidates
           .map(
             (c) =>
               `${c.ecosystem.displayName} (${c.detection.confidence.toFixed(2)}: ${c.detection.evidence.join(', ')})`,
           )
           .join('; ');
-        const msg = `Ambiguous ecosystem detection; using ${eco.displayName}. Candidates: ${names}.`;
+        const msg = `${p.folder ? `[${p.folder}] ` : ''}Ambiguous ecosystem detection; using ${p.ecosystem.displayName}. Candidates: ${names}.`;
         warnings.push(msg);
         this.log(msg, 'warn', 'analyze');
       }
-      analysis = await eco.analyze(ws);
-      warnings.push(...analysis.warnings);
-      await this.deps.reporter.update({
-        analysis,
-        ecosystem: eco.id,
-        packageManager: analysis.packageManager,
-      });
-      this.log(
-        `${eco.displayName} project${analysis.projectName ? ` "${analysis.projectName}"` : ''}: ${analysis.dependencies.length} dependencies, ` +
-          `lockfile: ${analysis.lockfiles.join(', ') || 'none'}, build: ${analysis.hasBuild ? 'yes' : 'no'}, tests: ${analysis.hasTests ? (analysis.testFramework ?? 'yes') : 'none'}`,
-        'info',
-        'analyze',
-      );
-      for (const w of analysis.warnings) this.log(w, 'warn', 'analyze');
 
-      const verifier = new Verifier(ws, eco, this.deps.sandbox, this.deps.sink, {
-        timeouts: this.config.timeouts,
-        networkForBuild: this.config.networkForBuild,
-        cacheDir,
-        env: SANDBOX_ENV,
+      await phase(async (run) => {
+        const analysis = await run.eco.analyze(run.ws);
+        run.analysis = analysis;
+        warnings.push(...analysis.warnings.map((w) => (run.folder ? `[${run.folder}] ${w}` : w)));
+        if (run === runs[0]) {
+          await this.deps.reporter.update({
+            analysis,
+            ecosystem: run.eco.id,
+            packageManager: analysis.packageManager,
+          });
+        }
+        this.log(
+          `${run.eco.displayName} project${analysis.projectName ? ` "${analysis.projectName}"` : ''}: ${analysis.dependencies.length} dependencies, ` +
+            `lockfile: ${analysis.lockfiles.join(', ') || 'none'}, build: ${analysis.hasBuild ? 'yes' : 'no'}, tests: ${analysis.hasTests ? (analysis.testFramework ?? 'yes') : 'none'}`,
+          'info',
+          'analyze',
+        );
+        for (const w of analysis.warnings) this.log(w, 'warn', 'analyze');
+        run.verifier = new Verifier(
+          run.ws,
+          run.eco,
+          this.deps.sandbox,
+          new ProjectSink(this.deps.sink, run.folder),
+          {
+            timeouts: this.config.timeouts,
+            networkForBuild: this.config.networkForBuild,
+            cacheDir,
+            env: SANDBOX_ENV,
+          },
+        );
       });
 
       await this.checkCancelled();
       await this.setStatus('BASELINE', 'Recording baseline failures');
       await this.stage('baseline', 'Running install, build, and test on the untouched code');
-      const runtime = await verifier.runtime();
-      this.log(`Selected ${runtime.label} (from ${runtime.source})`, 'info', 'baseline');
-      baseline = await verifier.verify({ clean: true });
-      await this.deps.reporter.update({
-        baseline: summarizeVerification(baseline),
-        runtime: baseline.runtime,
+      await phase(async (run) => {
+        if (run !== runs[0] && this.timeLeft() < this.config.timeouts.install) {
+          run.notRun = 'Not run: the job time budget was exhausted.';
+          this.log(run.notRun, 'warn', 'baseline');
+          return;
+        }
+        const verifier = run.verifier!;
+        const runtime = await verifier.runtime();
+        this.log(`Selected ${runtime.label} (from ${runtime.source})`, 'info', 'baseline');
+        run.baseline = await verifier.verify({ clean: true });
+        run.state = run.baseline;
+        if (run === runs[0]) {
+          await this.deps.reporter.update({
+            baseline: summarizeVerification(run.baseline),
+            runtime: run.baseline.runtime,
+          });
+        }
       });
-      await this.beat(baseline.score, `Baseline heartbeat ${baseline.score}`);
+      const baselineScore = meanScore(runs.map((r) => r.baseline?.score));
+      await this.beat(baselineScore, `Baseline heartbeat ${baselineScore}`);
 
       await this.setStatus('DIAGNOSING', 'Diagnosing cause of death');
       await this.stage('diagnose', 'Classifying failures');
-      for (const issue of baseline.issues) {
-        this.deps.sink.emit({ type: 'issue', issue, message: issue.title });
-        this.log(`Found: ${issue.title}`, issue.severity === 'warning' ? 'warn' : 'error', 'diagnose');
-        const d = issue.diagnostic;
-        if (d) {
-          const parts = [
-            `category=${d.category}`,
-            d.file && `file=${d.file}`,
-            d.lifecycle && `lifecycle=${d.lifecycle}`,
-            d.command && `command=${d.command}`,
-            d.httpStatus && `http=${d.httpStatus}`,
-            d.resources?.length && `resources=${d.resources.join(',')}`,
-          ].filter(Boolean);
-          this.log(`  ${parts.join(' ')}`, 'info', 'diagnose');
+      await phase(async (run) => {
+        const baseline = run.baseline;
+        if (!baseline) return;
+        for (const issue of baseline.issues) {
+          this.deps.sink.emit({
+            type: 'issue',
+            issue: run.folder ? { ...issue, title: `[${run.folder}] ${issue.title}` } : issue,
+            message: run.folder ? `[${run.folder}] ${issue.title}` : issue.title,
+          });
+          this.log(`Found: ${issue.title}`, issue.severity === 'warning' ? 'warn' : 'error', 'diagnose');
+          const d = issue.diagnostic;
+          if (d) {
+            const parts = [
+              `category=${d.category}`,
+              d.file && `file=${d.file}`,
+              d.lifecycle && `lifecycle=${d.lifecycle}`,
+              d.command && `command=${d.command}`,
+              d.httpStatus && `http=${d.httpStatus}`,
+              d.resources?.length && `resources=${d.resources.join(',')}`,
+            ].filter(Boolean);
+            this.log(`  ${parts.join(' ')}`, 'info', 'diagnose');
+          }
         }
-      }
-      if (baseline.issues.length === 0) this.log('No runtime failures found.', 'success', 'diagnose');
+        if (baseline.issues.length === 0) this.log('No runtime failures found.', 'success', 'diagnose');
+      });
 
-      let state = baseline;
-      if (baseline.issues.length > 0) {
+      if (runs.some((r) => !r.notRun && !r.error && (r.baseline?.issues.length ?? 0) > 0)) {
         await this.setStatus('REPAIRING', 'Attempting resurrection');
         await this.stage('repair', 'Applying fixes one at a time, verifying each');
-        state = await this.repairLoop(
-          ws,
-          eco,
-          verifier,
-          baseline,
-          commit.date,
-          cacheDir,
-          analysis.packageManager,
-        );
-        const count = (s: string) => this.attempts.filter((a) => a.status === s).length;
-        this.log(
-          `Repair stage finished: ${count('VERIFIED')} verified, ${count('REVERTED')} reverted, ${count('ERROR')} errored, ${count('SUGGESTED')} suggested (unverified).`,
-          'info',
-          'repair',
-        );
+        await phase(async (run) => {
+          if (!run.baseline || run.baseline.issues.length === 0) return;
+          if (this.sm.status !== 'REPAIRING') await this.setStatus('REPAIRING', 'Attempting resurrection');
+          run.state = await this.repairLoop(
+            run.ws,
+            run.eco,
+            run.verifier!,
+            run.baseline,
+            commitDate,
+            cacheDir,
+            run.analysis!.packageManager,
+          );
+          const mine = this.attempts.filter((a) => (a.project ?? '') === run.folder);
+          const count = (s: string) => mine.filter((a) => a.status === s).length;
+          this.log(
+            `Repair stage finished: ${count('VERIFIED')} verified, ${count('REVERTED')} reverted, ${count('ERROR')} errored, ${count('SUGGESTED')} suggested (unverified).`,
+            'info',
+            'repair',
+          );
+        });
       }
 
       await this.checkCancelled();
-      const finalRuntime = await verifier.runtime();
-      staticIssues = eco.supportsCiModernize
-        ? await this.staticCiFixes(ws, analysis, finalRuntime.major)
-        : [];
+      // GitHub Actions workflows live at the repository root and are fixed once, after the projects.
+      const ciRun = runs.find((r) => r.eco.supportsCiModernize && r.verifier && !r.error && !r.notRun);
+      if (ciRun) {
+        const finalRuntime = await ciRun.verifier!.runtime();
+        const rootRun = runs.find((r) => r.folder === '');
+        const workflows = rootRun?.analysis?.workflows ?? (await listWorkflows(ws));
+        staticIssues = await this.staticCiFixes(ws, workflows, finalRuntime.major);
+      }
 
       if (this.sm.status !== 'VERIFYING') await this.setStatus('VERIFYING', 'Final verification');
       await this.stage('finalize', 'Clean reinstall and final verification');
-      const anyChange = ws.changes().some((c) => !c.path.startsWith('.github/'));
-      final = anyChange || state !== baseline ? await verifier.verify({ clean: true }) : baseline;
-      await this.deps.reporter.update({ final: summarizeVerification(final), runtime: final.runtime });
-      await this.beat(final.score, `Final heartbeat ${final.score}`);
-      warnings = [...new Set([...warnings, ...verifier.warnings])];
+      await phase(async (run) => {
+        const anyChange = run.ws.changes().some((c) => !c.path.startsWith('.github/'));
+        run.final =
+          anyChange || run.state !== run.baseline
+            ? await run.verifier!.verify({ clean: true })
+            : run.baseline;
+        if (run === runs[0] && run.final) {
+          await this.deps.reporter.update({
+            final: summarizeVerification(run.final),
+            runtime: run.final.runtime,
+          });
+        }
+      });
+      const finalScore = meanScore(runs.map((r) => r.final?.score));
+      await this.beat(finalScore, `Final heartbeat ${finalScore}`);
+      for (const run of runs) {
+        for (const w of run.verifier?.warnings ?? []) warnings.push(run.folder ? `[${run.folder}] ${w}` : w);
+      }
+      warnings = [...new Set(warnings)];
     } catch (err) {
       error = toResurrectionError(err);
       this.log(`${error.code}: ${error.message}`, 'error', 'engine');
     }
+    this.folder = '';
 
     // ------------------------------------------------------------ report (always)
     const cancelled = error?.code === 'CANCELLED';
-    const notNode = error?.code === 'NOT_A_NODE_PROJECT';
-    const changes = ws?.changes() ?? [];
+    const noSupportedProject = error?.code === 'NO_SUPPORTED_PROJECT';
+
+    // One patch for the whole repository: project paths are re-based onto the repository root.
+    const changes: FileChange[] = [];
+    if (ws) {
+      const sources: { folder: string; ws: Workspace }[] = [{ folder: '', ws }];
+      for (const run of runs) if (run.folder !== '') sources.push({ folder: run.folder, ws: run.ws });
+      for (const s of sources)
+        for (const c of s.ws.changes()) changes.push({ ...c, path: prefixPath(s.folder, c.path) });
+      changes.sort((a, b) => a.path.localeCompare(b.path));
+    }
     const patch = createGitPatch(changes);
-    const health: Health = error && !notNode ? 'UNRECOVERABLE' : computeHealth(baseline, final);
+
+    const projectResults = runs.map((r) => {
+      const ran = !r.notRun && r.baseline !== null;
+      const health =
+        r.eco.verification === 'static'
+          ? computeStaticHealth(r.baseline, r.final)
+          : computeHealth(r.baseline, r.final);
+      return { run: r, ran, health };
+    });
+    const health: Health =
+      error && !noSupportedProject
+        ? 'UNRECOVERABLE'
+        : aggregateHealth([
+            ...projectResults.map((p) => ({ health: p.health, ran: p.ran })),
+            ...notRunProjects.map(() => ({ health: 'UNRECOVERABLE' as Health, ran: false })),
+          ]);
+
+    const primary = runs.find((r) => r.baseline) ?? runs[0] ?? null;
+    const reportProjects: ReportProjectInput[] | undefined =
+      runs.length > 1 || notRunProjects.length > 0
+        ? [
+            ...projectResults.map(({ run, ran, health: h }) => ({
+              folder: run.folder,
+              ecosystem: run.eco.id,
+              packageManager: run.analysis?.packageManager ?? null,
+              analysis: run.analysis,
+              baseline: run.baseline,
+              final: run.final,
+              health: h,
+              notRun: run.notRun ?? (ran ? undefined : 'Not run.'),
+              error: run.error ? { code: run.error.code, message: run.error.message } : undefined,
+            })),
+            ...notRunProjects.map((n) => ({
+              folder: n.folder,
+              ecosystem: n.ecosystem,
+              packageManager: null,
+              analysis: null,
+              baseline: null,
+              final: null,
+              health: 'UNRECOVERABLE' as Health,
+              notRun: n.reason,
+            })),
+          ]
+        : undefined;
 
     const report = buildReport({
       repo: {
@@ -699,10 +960,12 @@ export class ResurrectionPipeline {
         commitDate: commit?.date ?? null,
       },
       health,
-      ecosystem: eco?.id ?? null,
-      analysis,
-      baseline,
-      final,
+      ecosystem: primary?.eco.id ?? null,
+      analysis: primary?.analysis ?? null,
+      baseline: primary?.baseline ?? null,
+      final: primary?.final ?? null,
+      projects: reportProjects,
+      staticOnly: runs.length > 0 && runs.every((r) => r.eco.verification === 'static'),
       staticIssues,
       attempts: this.attempts,
       changes,
@@ -728,7 +991,7 @@ export class ResurrectionPipeline {
         errorCode: error!.code,
         errorMessage: error!.message,
       });
-    } else if (error && !notNode) {
+    } else if (error && !noSupportedProject) {
       status = 'FAILED';
       await this.setStatus('FAILED', error.message, {
         report,
@@ -747,8 +1010,8 @@ export class ResurrectionPipeline {
         health,
         report,
         patch,
-        heartbeat: final?.score ?? this.heartbeat,
-        ...(notNode ? { errorCode: error!.code, errorMessage: error!.message } : {}),
+        heartbeat: primary?.final ? meanScore(runs.map((r) => r.final?.score)) : this.heartbeat,
+        ...(noSupportedProject ? { errorCode: error!.code, errorMessage: error!.message } : {}),
       });
     }
     this.deps.sink.emit({ type: 'done', health, message: report.headline });

@@ -45,8 +45,8 @@ the context of the failures.
    (`package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`), Node version
    declarations (`.nvmrc`, `.node-version`, `engines.node`, `volta.node`), scripts, test presence,
    source language mix, and `.github/workflows/*.yml`.
-3. IF no `package.json` exists at the repository root THEN the system SHALL mark the job
-   `UNRECOVERABLE` with code `NOT_A_NODE_PROJECT`.
+3. IF no supported project (Node.js, Python, Rust, Go or Maven) is detected at the repository root THEN the system SHALL mark the job
+   `UNRECOVERABLE` with code `NO_SUPPORTED_PROJECT`.
 4. WHEN a non-npm lockfile is the only lockfile THEN the system SHALL record a warning and proceed
    with npm.
 5. WHEN analysis completes THEN the system SHALL report static findings: deprecated packages,

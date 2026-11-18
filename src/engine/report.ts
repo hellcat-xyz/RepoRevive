@@ -31,11 +31,29 @@ export interface ReportVerification {
 }
 
 export interface DependencyChange {
+  /** Project folder in multi-project reports; absent for the root project. */
+  project?: string;
   name: string;
   section: string;
   from: string | null;
   to: string | null;
   change: 'added' | 'removed' | 'changed';
+}
+
+/** Per-project results in multi-project reports (MERN and other layouts with projects in sub-folders). */
+export interface ReportProject {
+  /** Folder relative to the repository root; empty for the root project. */
+  folder: string;
+  ecosystem: string;
+  packageManager: string | null;
+  projectName: string | null;
+  health: Health;
+  runtime: { baseline: string | null; final: string | null };
+  verification: { baseline: ReportVerification | null; final: ReportVerification | null };
+  coverage?: VerificationCoverage;
+  /** Why the project was not verified (project cap, time budget), when applicable. */
+  notRun?: string;
+  error?: { code: string; message: string };
 }
 
 export interface ResurrectionReport {
@@ -65,6 +83,8 @@ export interface ResurrectionReport {
     deletions: number;
   }[];
   dependencyChanges: DependencyChange[];
+  /** Present only when the repository has several projects (or some were not run). */
+  projects?: ReportProject[];
   verification: { baseline: ReportVerification | null; final: ReportVerification | null };
   remainingIssues: { kind: IssueKind; title: string; step: string; advice: string; evidence: string }[];
   warnings: string[];
@@ -75,6 +95,16 @@ export interface ResurrectionReport {
 }
 
 const LOG_TAIL_LINES = 60;
+
+const STATIC_COVERAGE: VerificationCoverage = {
+  steps: { install: 'not-applicable', build: 'not-applicable', test: 'not-applicable' },
+  level: 'none',
+  limitations: [
+    'Static site: nothing was installed, built or executed.',
+    'Only local file references in HTML and CSS were checked. JavaScript syntax and behaviour were not tested.',
+  ],
+  testedFunctionally: false,
+};
 
 export function summarizeVerification(v: VerificationResult | null): ReportVerification | null {
   if (!v) return null;
@@ -116,6 +146,18 @@ export function dependencyChanges(before: string | null, after: string | null): 
   return out.sort((p, q) => p.name.localeCompare(q.name));
 }
 
+export interface ReportProjectInput {
+  folder: string;
+  ecosystem: string;
+  packageManager: string | null;
+  analysis: ProjectAnalysis | null;
+  baseline: VerificationResult | null;
+  final: VerificationResult | null;
+  health: Health;
+  notRun?: string;
+  error?: { code: string; message: string };
+}
+
 export interface BuildReportInput {
   repo: ResurrectionReport['repo'];
   health: Health;
@@ -123,6 +165,10 @@ export interface BuildReportInput {
   analysis: ProjectAnalysis | null;
   baseline: VerificationResult | null;
   final: VerificationResult | null;
+  /** Per-project inputs for multi-project jobs; analysis, baseline and final describe the primary project. */
+  projects?: ReportProjectInput[];
+  /** Every project is a static site: nothing was executed, only local references were checked. */
+  staticOnly?: boolean;
   staticIssues: Issue[];
   attempts: AttemptRecord[];
   changes: FileChange[];
@@ -138,9 +184,19 @@ function headlineFor(
   attempts: AttemptRecord[],
   baselineOk: boolean,
   error?: { message: string },
+  staticOnly = false,
 ): string {
   const verified = attempts.filter((a) => a.status === 'VERIFIED' || a.status === 'VERIFIED_STATIC').length;
   const ci = attempts.some((a) => a.status === 'VERIFIED_STATIC');
+  if (staticOnly && !error) {
+    const s = verified === 1 ? '' : 'es';
+    if (health === 'REVIVED')
+      return baselineOk
+        ? 'This static site is healthy: every local file reference resolves. Nothing was executed.'
+        : `Revived. ${verified} verified fix${s} repaired broken file references. Nothing was executed, so only references were checked.`;
+    if (health === 'PARTIALLY_REVIVED')
+      return `Partially revived. ${verified} verified fix${s} repaired broken references, but some remain.`;
+  }
   switch (health) {
     case 'REVIVED':
       return baselineOk
@@ -157,21 +213,39 @@ function headlineFor(
 
 export function buildReport(input: BuildReportInput): ResurrectionReport {
   const { baseline, final } = input;
-  const finalFingerprints = new Set(final?.issues.map((i) => i.fingerprint) ?? []);
-  const baselineIssues = [...(baseline?.issues ?? []), ...input.staticIssues];
+  const scopes = (input.projects ?? [{ folder: '', baseline, final, analysis: input.analysis }]).map((p) => ({
+    folder: p.folder,
+    baseline: p.baseline,
+    final: p.final,
+    analysis: p.analysis,
+  }));
+  const tag = (folder: string, title: string) => (folder ? `[${folder}] ${title}` : title);
   const seen = new Set<string>();
-  const rootCauses = baselineIssues
-    .filter((i) => (seen.has(i.fingerprint) ? false : (seen.add(i.fingerprint), true)))
-    .map((i) => ({
+  const rootCauses = [
+    ...scopes.flatMap((s) => {
+      const fps = new Set(s.final?.issues.map((i) => i.fingerprint) ?? []);
+      return (s.baseline?.issues ?? []).map((i) => ({
+        i,
+        folder: s.folder,
+        resolved: !fps.has(i.fingerprint) && s.final !== null,
+      }));
+    }),
+    ...input.staticIssues.map((i) => ({ i, folder: '', resolved: false })),
+  ]
+    .filter(({ i, folder }) => {
+      const key = `${folder}::${i.fingerprint}`;
+      return seen.has(key) ? false : (seen.add(key), true);
+    })
+    .map(({ i, folder, resolved }) => ({
       kind: i.kind,
-      title: i.title,
+      title: tag(folder, i.title),
       step: i.step,
       cause: ISSUE_EXPLANATIONS[i.kind].cause,
       evidence: i.evidence,
       resolved:
         i.kind === 'outdated-ci'
           ? input.attempts.some((a) => a.fingerprint === i.fingerprint && a.status === 'VERIFIED_STATIC')
-          : !finalFingerprints.has(i.fingerprint) && final !== null,
+          : resolved,
     }));
 
   const modifiedFiles = input.changes.map((c) => {
@@ -189,14 +263,21 @@ export function buildReport(input: BuildReportInput): ResurrectionReport {
     };
   });
 
-  const pkg = input.changes.find((c) => c.path === 'package.json');
-  const remainingIssues = (final?.issues ?? []).map((i) => ({
-    kind: i.kind,
-    title: i.title,
-    step: i.step,
-    advice: ISSUE_EXPLANATIONS[i.kind].advice,
-    evidence: i.evidence,
-  }));
+  const dependencyChangesAll = input.changes
+    .filter((c) => c.path === 'package.json' || c.path.endsWith('/package.json'))
+    .flatMap((c) => {
+      const folder = c.path === 'package.json' ? '' : c.path.slice(0, -'/package.json'.length);
+      return dependencyChanges(c.before, c.after).map((d) => (folder ? { ...d, project: folder } : d));
+    });
+  const remainingIssues = scopes.flatMap((s) =>
+    (s.final?.issues ?? []).map((i) => ({
+      kind: i.kind,
+      title: tag(s.folder, i.title),
+      step: i.step,
+      advice: ISSUE_EXPLANATIONS[i.kind].advice,
+      evidence: i.evidence,
+    })),
+  );
 
   const recommendations: string[] = [];
   const finalMajor = Number(/node:(\d+)/.exec(final?.runtime ?? '')?.[1] ?? NaN);
@@ -208,12 +289,28 @@ export function buildReport(input: BuildReportInput): ResurrectionReport {
   if (input.attempts.some((a) => a.strategyId === 'npmrc-legacy-peer-deps' && a.status === 'VERIFIED')) {
     recommendations.push(ISSUE_EXPLANATIONS['peer-conflict'].advice);
   }
-  if (input.analysis && !input.analysis.hasTests) {
+  const noTests = scopes.filter((s) => s.analysis && !s.analysis.hasTests);
+  if (noTests.length > 0) {
     recommendations.push(
-      'The project has no test suite, so verification could only check install and build. Add tests to protect future changes.',
+      scopes.length > 1
+        ? `No test suite found in: ${noTests.map((s) => s.folder || '(root)').join(', ')}. Verification could only check install and build there. Add tests to protect future changes.`
+        : 'The project has no test suite, so verification could only check install and build. Add tests to protect future changes.',
     );
   }
   for (const r of remainingIssues) if (!recommendations.includes(r.advice)) recommendations.push(r.advice);
+
+  const projects: ReportProject[] | undefined = input.projects?.map((p) => ({
+    folder: p.folder,
+    ecosystem: p.ecosystem,
+    packageManager: p.packageManager,
+    projectName: p.analysis?.projectName ?? null,
+    health: p.health,
+    runtime: { baseline: p.baseline?.runtime ?? null, final: p.final?.runtime ?? null },
+    verification: { baseline: summarizeVerification(p.baseline), final: summarizeVerification(p.final) },
+    coverage: p.final ? computeCoverage(p.final) : undefined,
+    notRun: p.notRun,
+    error: p.error,
+  }));
 
   return {
     version: 1,
@@ -223,17 +320,22 @@ export function buildReport(input: BuildReportInput): ResurrectionReport {
     headline: headlineFor(
       input.health,
       input.attempts,
-      baseline !== null && allStepsOk(baseline),
+      scopes.length > 0 &&
+        scopes.every((s) =>
+          input.staticOnly ? s.baseline?.issues.length === 0 : s.baseline !== null && allStepsOk(s.baseline),
+        ),
       input.error,
+      input.staticOnly,
     ),
     ecosystem: input.ecosystem,
-    coverage: computeCoverage(final),
+    coverage: input.staticOnly ? STATIC_COVERAGE : computeCoverage(final),
     runtime: { baseline: baseline?.runtime ?? null, final: final?.runtime ?? null },
     analysis: input.analysis,
     rootCauses,
     attempts: input.attempts,
     modifiedFiles,
-    dependencyChanges: dependencyChanges(pkg?.before ?? null, pkg?.after ?? null),
+    dependencyChanges: dependencyChangesAll,
+    ...(projects ? { projects } : {}),
     verification: { baseline: summarizeVerification(baseline), final: summarizeVerification(final) },
     remainingIssues,
     warnings: input.warnings,
@@ -255,6 +357,22 @@ export function reportToMarkdown(r: ResurrectionReport): string {
   );
   L.push(`**Runtime:** ${r.runtime.baseline ?? '-'} → ${r.runtime.final ?? '-'}  `);
   L.push(`**Generated:** ${r.generatedAt}`, '', `> ${r.headline}`, '');
+
+  if (r.projects && r.projects.length > 0) {
+    L.push('## Projects', '', '| Project | Ecosystem | Health | Runtime | Notes |', '|---|---|---|---|---|');
+    for (const p of r.projects) {
+      const note = p.notRun ?? (p.error ? `${p.error.code}: ${p.error.message}` : '');
+      const runtime = p.runtime.final ?? p.runtime.baseline ?? '-';
+      L.push(
+        `| ${p.folder || '(root)'} | ${p.ecosystem} | ${p.health.replace('_', ' ')} | ${runtime} | ${note.replace(/\|/g, '/')} |`,
+      );
+    }
+    L.push(
+      '',
+      'The sections below describe the primary project. Attempts and files list every project; paths are relative to the repository root.',
+      '',
+    );
+  }
 
   L.push('## Verification', '', '| Step | Baseline | Final |', '|---|---|---|');
   for (const s of STEP_NAMES) {
@@ -291,7 +409,9 @@ export function reportToMarkdown(r: ResurrectionReport): string {
   if (r.dependencyChanges.length) {
     L.push('## Dependency changes', '', '| Package | Section | From | To |', '|---|---|---|---|');
     for (const d of r.dependencyChanges)
-      L.push(`| ${d.name} | ${d.section} | ${d.from ?? '—'} | ${d.to ?? '—'} |`);
+      L.push(
+        `| ${d.name}${d.project ? ` (${d.project})` : ''} | ${d.section} | ${d.from ?? '—'} | ${d.to ?? '—'} |`,
+      );
     L.push('');
   }
 

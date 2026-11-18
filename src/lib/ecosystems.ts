@@ -29,6 +29,12 @@ export const SUPPORTED_ECOSYSTEMS: EcosystemInfo[] = [
     managers: ['Cargo'],
     repairs: 'missing crates, toolchain/edition mismatch, stale Cargo.lock',
   },
+  {
+    id: 'static',
+    name: 'Static sites',
+    managers: ['HTML/CSS/JS'],
+    repairs: 'broken file references (letter case); checked statically, nothing is run',
+  },
 ];
 
 export const ECOSYSTEM_LABEL: Record<string, string> = {
@@ -37,6 +43,7 @@ export const ECOSYSTEM_LABEL: Record<string, string> = {
   rust: 'Rust',
   go: 'Go',
   maven: 'Java (Maven)',
+  static: 'Static site',
 };
 
 export type PublishModeId = 'PATCH_ONLY' | 'REVIEW_PR' | 'AUTO_PR';

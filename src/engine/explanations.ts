@@ -170,6 +170,12 @@ export const ISSUE_EXPLANATIONS: Record<IssueKind, { cause: string; advice: stri
     cause: 'The compiler rejected the source code.',
     advice: 'Fix the reported errors; they commonly come from dependency API changes after an update.',
   },
+  'broken-reference': {
+    cause:
+      'A page or stylesheet points at a local file that does not exist at that exact path. Letter case matters on Linux servers and GitHub Pages, so a link that works on Windows or macOS can still be broken online.',
+    advice:
+      'Fix the path or restore the missing file. RepoRevive only rewrites a reference when an existing file differs by letter case alone.',
+  },
   unknown: {
     cause: 'The step failed with an error that no built-in rule recognises.',
     advice:

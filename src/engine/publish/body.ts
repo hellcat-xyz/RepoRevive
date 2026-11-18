@@ -78,6 +78,23 @@ export function buildPrBody(i: PrBodyInput): string {
     L.push(`- ${a.title} (${label}). Files: ${a.files.map((f) => `\`${f}\``).join(', ')}`);
   }
   if (kept.length === 0) L.push('- None.');
+  const ai = kept.filter((a) => a.strategyId === 'llm-source-fix');
+  if (ai.length) {
+    L.push(
+      '',
+      '### AI-assisted changes',
+      '',
+      'An AI model proposed the following changes. RepoRevive kept them only because they passed verification in the sandbox. Verification is not a code review: read them like any other contribution.',
+      '',
+    );
+    for (const a of ai) {
+      const why = a.rationale.split('\n')[0]!.slice(0, 300);
+      L.push(
+        `- ${a.title.replace(/^AI-proposed fix:\s*/, '')}. Files: ${a.files.map((f) => `\`${f}\``).join(', ')}`,
+      );
+      if (why) L.push(`  - Reasoning: ${why}`);
+    }
+  }
   L.push('', '### Files modified', '');
   for (const f of r.modifiedFiles) L.push(`- \`${f.path}\` (${f.status}, +${f.additions}/-${f.deletions})`);
   if (i.excluded.length) {

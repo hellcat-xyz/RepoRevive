@@ -52,11 +52,13 @@ export class Verifier {
         'INTERNAL',
         `Runtime image ${runtime.image} is not allowed for ${runtime.family}`,
       );
-    await this.sandbox.ensureImage(runtime.image, (line) =>
-      this.sink.emit({ type: 'log', level: 'debug', message: line, source: 'docker' }),
-    );
     const plan = await this.eco.plan(this.ws, runtime, this.opts.timeouts);
     for (const p of plan) if (p.command) assertSafeCommand(p.command);
+    // Static sites have no commands, so no container image is needed.
+    if (plan.some((p) => p.command))
+      await this.sandbox.ensureImage(runtime.image, (line) =>
+        this.sink.emit({ type: 'log', level: 'debug', message: line, source: 'docker' }),
+      );
     const fingerprint = await this.eco.installFingerprint(this.ws, runtime);
     const steps = {} as Record<StepName, StepResult>;
 

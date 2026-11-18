@@ -66,6 +66,7 @@ export type IssueKind =
   | 'missing-feature'
   | 'build-script-failure'
   | 'compile-error'
+  | 'broken-reference'
   | 'unknown';
 
 export type Severity = 'critical' | 'error' | 'warning' | 'info';
@@ -120,6 +121,8 @@ export type AttemptStatus = 'VERIFIED' | 'VERIFIED_STATIC' | 'REVERTED' | 'SUGGE
 
 export interface AttemptRecord {
   seq: number;
+  /** Project folder (relative to the repository root) in multi-project jobs; absent for the root project. */
+  project?: string;
   issueKind: IssueKind;
   fingerprint: string;
   strategyId: string;

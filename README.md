@@ -14,10 +14,38 @@ If you explicitly choose to, it also opens a **draft pull request** with exactly
 | Rust      | `Cargo.toml`, `Cargo.lock`, `rust-toolchain[.toml]`                                        | Cargo (workspaces)                  | `cargo fetch`; `cargo check --workspace --all-targets`; `cargo test --workspace` | `rust:1.<minor>-slim`                    |
 | Go        | `go.mod`, `go.sum`, `go.work`                                                              | Go modules                          | `go mod download`; `go build ./...`; `go test ./...`                             | `golang:1.<minor>`                       |
 | Java      | `pom.xml`                                                                                  | Maven                               | `dependency:go-offline`; `test-compile`; `test`                                  | `maven:3.9-eclipse-temurin-<8,11,17,21>` |
+| Static    | `index.html` (or any root `*.html`) with no manifest                                       | none                                | nothing is run; local references in HTML/CSS are checked                         | none                                     |
+
+Static sites are a fallback: any repository with a manifest is treated as that ecosystem. Fixes are labelled **verified (static)**, never verified (runtime), because nothing is executed. Only references whose target exists in another letter case are rewritten; missing files are never invented.
 
 Gradle is **not** supported yet and is not detected. Detection is scored (confidence 0..1); if two ecosystems score
 close together the job reports the ambiguity and uses the higher-ranked one.
 
+### Multi-project repositories (MERN and monorepos)
+
+Projects in sub-folders are found and verified one by one, each in its own sandbox runs with its own runtime and repair budget.
+
+- Root without a project, or a root `package.json` that only orchestrates (no workspaces, lockfile, build or test script): every project up to two folders deep is verified (for example `client/` and `server/`).
+- Root that is a project: it is verified, plus conventional companion folders (`client`, `frontend`, `server`, `backend`, `api`, `web`, `ui`, `app`, `website`, `admin`).
+- npm/Yarn/pnpm workspaces and Cargo/Go workspaces stay one project; the package manager handles the workspace.
+- `MAX_SUBPROJECTS` (default 4) caps how many projects run; the rest are listed as not run.
+- One patch covers everything, with paths relative to the repository root (`client/package.json`). Health is `REVIVED` only when every project is revived.
+- A sub-project is mounted on its own, so references outside its folder (`file:../shared`) can fail at baseline. Tests that need MongoDB or another live service fail under `--network none` and are reported as failures; no test is skipped or removed.
+
+### AI-assisted source fixes (optional)
+
+Set `LLM_API_KEY` (and optionally `LLM_BASE_URL`, `LLM_MODEL`) to let RepoRevive fix problems in project source, not
+only in manifests. It is the last strategy tried, after every deterministic one.
+
+- The model sees the failing log, the files it points at (JS/TS, Python, Rust, Go, Java/Kotlin), the local files those
+  import, and the repository layout. After a reverted attempt it also sees the log of what that change caused.
+- It may edit up to 10 files per proposal (and create new ones). Every proposal is applied, verified in the sandbox, and
+  rolled back unless it helps. `LLM_MAX_ATTEMPTS_PER_ISSUE` (default 3) bounds the tries per issue; an identical
+  proposal is never tried twice.
+- Edits that weaken the project are rejected before they run: fewer tests, skipped tests, `|| true`, `exit 0`,
+  removed or no-op scripts, new `child_process`/`eval`, lockfiles, workflows, and credential files.
+- Kept AI fixes appear in the pull request under "AI-assisted changes" and must be reviewed like any contribution.
+- The default `gpt-4o-mini` is cheap but limited. For real source repairs use a stronger model through `LLM_MODEL`.
 ### What gets repaired (deterministic strategies, tried before any AI edit)
 
 | Ecosystem | Strategies                                                                                                                                                                                                                                                                   |
@@ -188,7 +216,7 @@ failure scenarios.
 
 ## Limitations
 
-- Public GitHub repositories only; the root project is verified (workspaces/monorepos are analysed; per-workspace results are not reported).
+- Public GitHub repositories only. Projects in sub-folders are verified separately (see Multi-project repositories); package-manager workspaces count as one project.
 - Python/Rust/Go/Maven/pnpm/Yarn support was verified with scripted-sandbox tests and unit tests; the real-container tests (`npm run test:docker`) and live PR test are opt-in and were not executed in the environment this was written in.
 - Maven offline test runs can fail when Surefire providers were not pre-fetched; Gradle is unsupported.
 - Rust/Python projects needing system libraries (OpenSSL headers, libpq) cannot be fixed: images are not customised.

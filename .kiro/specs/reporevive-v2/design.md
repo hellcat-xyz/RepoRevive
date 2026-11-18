@@ -71,3 +71,13 @@ EMPTY_PATCH, UNSUPPORTED_CHANGE, POLICY). Retryable codes go to `FAILED(retryabl
 - **Fork flow limits:** GitHub App user tokens only act where the app is installed; forking needs the app's repository-creation permission. If GitHub refuses, the publication is BLOCKED with the reason.
 - **Package managers for Node:** pnpm/Yarn are installed into /cache/pm during the networked install step and run from there. Build/test stay offline.
 - **Registries:** PyPI, crates.io, Go proxy and Maven Central search are read-only metadata GETs behind PackageRegistry.
+
+## Static site ecosystem (`src/engine/ecosystems/static/`)
+
+- `references.ts`: pure extraction (`extractHtmlReferences`, `extractCssReferences`), `localTarget`, case-exact
+  `resolveExact`, `rewriteReference`, and `findBrokenReferences(ws)`. Reads only through `Workspace`.
+- `index.ts`: `Ecosystem` with `fallback: true` and `verification: 'static'`; `staticIssues` is the diagnoser.
+- `strategies.ts`: `static-reference-case-fix` (invasiveness 2, proposals have `kind: 'static'`).
+- Pipeline: proposals with `kind: 'static'` that pass verification are recorded `VERIFIED_STATIC`. Health for
+  static-only projects comes from `computeStaticHealth` (remaining issues), not from skipped steps.
+- `Verifier` pulls a runtime image only when the plan has a command, so a static site never starts Docker.

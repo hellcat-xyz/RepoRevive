@@ -16,6 +16,7 @@ const EnvSchema = z.object({
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(16).default(2),
   JOB_TIMEOUT_MINUTES: z.coerce.number().min(5).max(240).default(45),
   MAX_REPAIR_ATTEMPTS: z.coerce.number().int().min(0).max(50).default(12),
+  MAX_SUBPROJECTS: z.coerce.number().int().min(1).max(10).default(4),
   SANDBOX_MEMORY: z
     .string()
     .regex(/^\d+[mg]$/i)
@@ -35,6 +36,7 @@ const EnvSchema = z.object({
   LLM_API_KEY: z.string().optional(),
   LLM_BASE_URL: z.string().url().default('https://api.openai.com/v1'),
   LLM_MODEL: z.string().default('gpt-4o-mini'),
+  LLM_MAX_ATTEMPTS_PER_ISSUE: z.coerce.number().int().min(1).max(10).default(3),
   // GitHub App (user-to-server OAuth) for sign-in and pull requests. All optional; the feature is off unless all are set.
   GITHUB_APP_CLIENT_ID: blankToUndefined(z.string()),
   GITHUB_APP_CLIENT_SECRET: blankToUndefined(z.string()),
@@ -104,6 +106,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     workerConcurrency: e.WORKER_CONCURRENCY,
     jobTimeoutMs: e.JOB_TIMEOUT_MINUTES * 60_000,
     maxAttempts: e.MAX_REPAIR_ATTEMPTS,
+    maxProjects: e.MAX_SUBPROJECTS,
+    llmMaxPerIssue: e.LLM_MAX_ATTEMPTS_PER_ISSUE,
     sandbox: { memory: e.SANDBOX_MEMORY, cpus: e.SANDBOX_CPUS, pidsLimit: e.SANDBOX_PIDS_LIMIT },
     cloneTimeoutMs: e.CLONE_TIMEOUT_SECONDS * 1000,
     timeouts: {

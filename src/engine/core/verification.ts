@@ -77,6 +77,20 @@ export function computeHealth(
   return 'UNRECOVERABLE';
 }
 
+/**
+ * Health for projects where nothing is executed (static sites): every step is "not applicable", so
+ * health follows the remaining static issues instead. REVIVED iff none remain.
+ */
+export function computeStaticHealth(
+  baseline: Pick<VerificationResult, 'issues'> | null,
+  final: Pick<VerificationResult, 'issues'> | null,
+): Health {
+  if (!final) return 'UNRECOVERABLE';
+  if (final.issues.length === 0) return 'REVIVED';
+  if (baseline && final.issues.length < baseline.issues.length) return 'PARTIALLY_REVIVED';
+  return 'UNRECOVERABLE';
+}
+
 export function summarizeSteps(steps: Record<StepName, StepResult>) {
   return Object.fromEntries(
     STEP_NAMES.map((s) => [s, { status: steps[s].status, skipReason: steps[s].skipReason }]),
